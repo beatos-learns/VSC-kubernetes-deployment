@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: auth-staging
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: auth-stack
+  source:
+    repoURL: https://github.com/beatos-learns/VSC-kubernetes-deployment.git
+    targetRevision: main
+    path: charts/auth-stack
+    helm:
+      # short release name => resource names auth-db / auth-backend / auth-frontend
+      releaseName: auth
+      valueFiles:
+        - values.yaml
+        - values-staging.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: auth-staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

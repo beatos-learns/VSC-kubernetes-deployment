@@ -1,0 +1,8 @@
+# Values for the official argo-cd chart (https://argoproj.github.io/argo-helm)
+# installed once during bootstrap — see bootstrap/README.md.
+configs:
+  params:
+    # The API server runs plain HTTP; access is via `kubectl port-forward`
+    # (TLS would otherwise be terminated twice). If the dashboard is later
+    # exposed through Traefik, keep this and terminate TLS at the ingress.
+    server.insecure: true

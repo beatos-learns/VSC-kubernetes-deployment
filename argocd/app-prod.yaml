@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: auth-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: auth-stack
+  source:
+    repoURL: https://github.com/beatos-learns/VSC-kubernetes-deployment.git
+    targetRevision: main
+    path: charts/auth-stack
+    helm:
+      releaseName: auth
+      valueFiles:
+        - values.yaml
+        - values-prod.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: auth-prod
+  syncPolicy:
+    # Prod syncs automatically too — the human gate is the promotion PR
+    # into values-prod.yaml, not a manual sync button.
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

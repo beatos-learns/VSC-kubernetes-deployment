@@ -1,0 +1,26 @@
+# AppProject for the application environments. Deliberately strict:
+# only this repo as source, only the two env namespaces as destinations,
+# and no cluster-scoped resources (ResourceQuota and NetworkPolicies are
+# namespaced; namespace creation itself is done by the CreateNamespace
+# sync option, which is not subject to this whitelist).
+# The Traefik infrastructure app runs under the built-in `default` project
+# because an ingress controller legitimately needs cluster-scoped resources
+# (CRDs, ClusterRole, IngressClass).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: auth-stack
+  namespace: argocd
+spec:
+  description: Auth stack environments (staging + production)
+  sourceRepos:
+    - https://github.com/beatos-learns/VSC-kubernetes-deployment.git
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: auth-staging
+    - server: https://kubernetes.default.svc
+      namespace: auth-prod
+  clusterResourceWhitelist: []
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"

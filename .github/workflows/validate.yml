@@ -1,0 +1,73 @@
+# Validation gate for the Ops repo. Deliberately deploy-free:
+# ArgoCD pulls from main — this workflow only proves that what lands
+# on main renders and conforms (Aufgabe 4: no imperative deployment).
+name: validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  # keep in sync with the DOKS cluster version
+  KUBERNETES_VERSION: "1.33.1"
+
+jobs:
+  chart:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [staging, prod]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+
+      - name: Vendor the generic-stack dependency
+        run: helm dependency build charts/auth-stack
+
+      - name: Lint
+        run: >-
+          helm lint charts/auth-stack
+          --values charts/auth-stack/values.yaml
+          --values charts/auth-stack/values-${{ matrix.environment }}.yaml
+          --strict
+
+      - name: Render
+        run: >-
+          helm template auth charts/auth-stack
+          --namespace auth-${{ matrix.environment }}
+          --values charts/auth-stack/values.yaml
+          --values charts/auth-stack/values-${{ matrix.environment }}.yaml
+          > rendered-${{ matrix.environment }}.yaml
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz kubeconform
+      - name: Validate rendered manifests
+        run: >-
+          ./kubeconform -strict -summary
+          -kubernetes-version "$KUBERNETES_VERSION"
+          rendered-${{ matrix.environment }}.yaml
+
+  argocd-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz kubeconform
+      - name: Validate Application/AppProject manifests
+        # CRD schemas come from the community CRDs catalog
+        run: >-
+          ./kubeconform -strict -summary
+          -kubernetes-version "$KUBERNETES_VERSION"
+          -schema-location default
+          -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+          argocd/ bootstrap/root-application.yaml

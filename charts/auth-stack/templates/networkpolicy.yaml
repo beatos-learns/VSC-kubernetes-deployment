@@ -1,0 +1,61 @@
+{{- with .Values.namespacePolicy.networkPolicy }}
+{{- if .enabled }}
+{{/*
+  Namespace isolation (Aufgabe 5):
+    1. deny all ingress by default
+    2. allow traffic between pods of this namespace (frontend -> backend -> db)
+    3. allow the ingress controller namespace to reach the frontend
+  Kubelet probes originate from the node and are unaffected (Cilium host entity).
+  Egress is intentionally left open.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-default-deny-ingress
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-allow-same-namespace
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-allow-ingress-controller
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .ingressControllerNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .frontendPort }}
+{{- end }}
+{{- end }}

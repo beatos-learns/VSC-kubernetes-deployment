@@ -1,0 +1,88 @@
+# ---------------------------------------------------------------------------
+# Common configuration shared by every environment.
+# Environment-specific values (image tags, hosts, replicas, quota sizes)
+# live in values-staging.yaml / values-prod.yaml.
+#
+# Everything under `generic-stack:` is passed to the dependency chart and is
+# validated by its values.schema.json. Top-level keys below it drive this
+# wrapper chart's own templates (namespace policy).
+# ---------------------------------------------------------------------------
+
+generic-stack:
+  global:
+    # DigitalOcean block storage for the PostgreSQL PVC
+    storageClass: do-block-storage
+    # Pull secret for GHCR, created out-of-band per namespace
+    # (see bootstrap/README.md). Remove if the GHCR packages are public.
+    imagePullSecrets:
+      - name: ghcr-pull
+
+  components:
+    # The in-stack Traefik proxy component is replaced by the cluster-wide
+    # Traefik ingress controller (argocd/infra-traefik.yaml) plus the
+    # frontend Ingress below: one DO load balancer shared by all
+    # environments instead of one per environment.
+    proxy:
+      enabled: false
+
+    db:
+      # Secret with key `db-password`; created out-of-band (bootstrap/README.md)
+      existingSecret: auth-stack-secrets
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+
+    backend:
+      # Secret with keys `db-password` and `jwt-secret`
+      existingSecret: auth-stack-secrets
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+
+    frontend:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 32Mi
+        limits:
+          cpu: 200m
+          memory: 64Mi
+      ingress:
+        enabled: true
+        className: traefik
+        # hosts are set per environment
+
+# ---------------------------------------------------------------------------
+# Wrapper-chart namespace policy (rendered by templates/)
+# ---------------------------------------------------------------------------
+namespacePolicy:
+  # Namespace-wide hard caps (Aufgabe 5). NOTE: once a cpu/memory quota is
+  # active, every pod in the namespace MUST declare requests and limits —
+  # the component `resources` above are therefore mandatory, not cosmetic.
+  resourceQuota:
+    enabled: true
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+    pods: 15
+
+  # Default-deny ingress + explicit allows (Aufgabe 5). Egress is left open.
+  # Kubelet probes originate from the node and are not affected by
+  # NetworkPolicies on DOKS (Cilium host entity).
+  networkPolicy:
+    enabled: true
+    # namespace the Traefik ingress controller runs in
+    ingressControllerNamespace: traefik
+    # frontend main port the ingress controller may reach
+    frontendPort: 3000

@@ -1,0 +1,14 @@
+apiVersion: v2
+name: auth-stack
+description: >-
+  Environment wrapper around the generic-stack chart published by
+  VSC-kubernetes-containers. Pins the chart version, carries the
+  per-environment values overlays, and adds namespace policy
+  (ResourceQuota, NetworkPolicies) that is a deployment concern,
+  not an application concern.
+type: application
+version: 0.1.0
+dependencies:
+  - name: generic-stack
+    version: "0.0.1"
+    repository: oci://ghcr.io/beatos-learns/vsc-kubernetes-containers/charts

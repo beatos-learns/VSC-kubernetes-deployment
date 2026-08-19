@@ -1,0 +1,6 @@
+dependencies:
+- name: generic-stack
+  repository: oci://ghcr.io/beatos-learns/vsc-kubernetes-containers/charts
+  version: 0.0.1
+digest: sha256:64211fdbf5ed25863150501ef6c45fcf301423236a55e572366d84c31e3c19b1
+generated: "2026-08-19T19:30:36.7866027+02:00"

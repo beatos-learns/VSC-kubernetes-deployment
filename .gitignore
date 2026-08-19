@@ -1,0 +1,9 @@
+/.idea/
+
+/NOTES.md
+/VSC_Orchestrierung.pdf
+/CI-REPO-NOTES.md
+
+# helm dependency artifacts (vendored on demand via `helm dependency build`)
+/charts/auth-stack/charts/
+*.tgz

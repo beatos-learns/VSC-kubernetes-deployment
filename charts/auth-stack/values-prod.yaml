@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Production environment (namespace: auth-prod)
+#
+# The image tags below are promoted from staging via pull request opened by
+# the CI pipeline in VSC-kubernetes-containers (human-gated promotion).
+# Do not reformat these lines.
+# ---------------------------------------------------------------------------
+
+generic-stack:
+  components:
+    db:
+      image:
+        tag: "0.0.1" # promoted via PR
+      persistence:
+        size: 2Gi
+
+    backend:
+      image:
+        tag: "0.0.1" # promoted via PR
+      replicas: 2
+      # TODO(Aufgabe 6): replace static replicas with hpa/pdb values once
+      # generic-stack ships per-component `hpa:` and `pdb:` keys.
+
+    frontend:
+      image:
+        tag: "0.0.1" # promoted via PR
+      replicas: 2
+      ingress:
+        hosts:
+          # TODO: replace with the real production host
+          - host: auth.example.com
+
+namespacePolicy:
+  resourceQuota:
+    requests:
+      cpu: "2"
+      memory: 2Gi
+    limits:
+      cpu: "4"
+      memory: 4Gi
+    pods: 20

@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# Staging environment (namespace: auth-staging)
+#
+# The image tags below are the PROMOTION TARGET: the CI pipeline in
+# VSC-kubernetes-containers commits tag bumps here on every successful
+# build of the main branch. Do not reformat these lines.
+# ---------------------------------------------------------------------------
+
+generic-stack:
+  components:
+    db:
+      image:
+        tag: "0.0.1" # promoted by CI
+      persistence:
+        size: 1Gi
+
+    backend:
+      image:
+        tag: "0.0.1" # promoted by CI
+
+    frontend:
+      image:
+        tag: "0.0.1" # promoted by CI
+      ingress:
+        hosts:
+          # TODO: replace with a real host once the Traefik LB IP is known —
+          # either DNS or nip.io, e.g. auth-staging.203-0-113-10.nip.io
+          - host: auth-staging.example.com
+
+namespacePolicy:
+  resourceQuota:
+    requests:
+      cpu: "1"
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+    pods: 10
