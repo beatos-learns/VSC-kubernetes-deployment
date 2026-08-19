@@ -22,9 +22,9 @@ jobs:
       matrix:
         environment: [staging, prod]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
 
       - name: Vendor the generic-stack dependency
         run: helm dependency build charts/auth-stack
@@ -57,7 +57,7 @@ jobs:
   argocd-manifests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install kubeconform
         run: |
