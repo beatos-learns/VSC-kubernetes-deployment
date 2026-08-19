@@ -85,5 +85,6 @@ kubectl -n traefik get svc traefik \
 
 Point DNS records at that IP — or use nip.io hosts (e.g.
 `auth-staging.203-0-113-10.nip.io`) — and set the `ingress.hosts` values in
-`charts/auth-stack/values-staging.yaml` / `values-prod.yaml` via a normal
-git commit. ArgoCD picks it up.
+`charts/auth-stack/values-staging.yaml` / `values-prod.yaml` via a pull
+request (`main` only accepts PRs with green validate checks). ArgoCD picks
+it up after the merge.
