@@ -44,6 +44,18 @@ jobs:
           --values charts/auth-stack/values-${{ matrix.environment }}.yaml
           > rendered-${{ matrix.environment }}.yaml
 
+      # Debug aid for red-gated PRs: what this commit would deploy.
+      # Runs even when a later step fails; skipped silently when lint or
+      # render already failed and there is nothing to upload.
+      - name: Upload rendered manifests
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: rendered-${{ matrix.environment }}
+          path: rendered-${{ matrix.environment }}.yaml
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Install kubeconform
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \

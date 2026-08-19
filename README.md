@@ -18,8 +18,8 @@ TEKO «Verteilte Systeme, Containerisierung» — Orchestrierung
  push to master                                      
    └─ build images ─ publish to GHCR                 
    └─ publish generic-stack chart (OCI)              
-   └─ PROMOTE ───────────────────────── commit ────► values-staging.yaml (tag bump)
-                                        PR ────────► values-prod.yaml   (human gate)
+   └─ PROMOTE ────────── PR, auto-merge on ✓ ─────► values-staging.yaml (tag bump)
+                         PR, human-merged ────────► values-prod.yaml   (prod gate)
                                                               │
                                                               ▼ pull (no push deploys!)
                                                      ArgoCD @ DOKS
@@ -52,7 +52,9 @@ charts/auth-stack/          wrapper chart:
   values-prod.yaml          env overlay — promoted via PR
   templates/                namespace policy only: ResourceQuota, NetworkPolicies
 .github/workflows/
-  validate.yml              PR/main gate: helm lint + template + kubeconform
+  validate.yml              PR/main gate: helm lint + template + kubeconform;
+                            uploads the rendered manifests per env as a run
+                            artifact (debug aid for red-gated PRs)
 ```
 
 ## Design decisions
@@ -83,7 +85,7 @@ charts/auth-stack/          wrapper chart:
 |---|---|---|
 | Namespace | `auth-staging` | `auth-prod` |
 | Values | `values-staging.yaml` | `values-prod.yaml` |
-| Promotion | automatic commit by CI | pull request by CI, human-merged |
+| Promotion | PR by CI, auto-merged on green validate | PR by CI, human-merged |
 | Replicas (backend/frontend) | 1 / 1 | 2 / 2 (→ HPA in Aufgabe 6) |
 | Quota (req / lim CPU) | 1 / 2 | 2 / 4 |
 | Quota (req / lim memory) | 1Gi / 2Gi | 2Gi / 4Gi |
@@ -91,17 +93,23 @@ charts/auth-stack/          wrapper chart:
 
 ## Promotion contract (CI-repo side)
 
-The CI repo's `build.yml` gets a final `promote` job (to be added there):
+The CI repo's `build.yml` gets a final `promote` job (see
+`CI-REPO-NOTES.md`):
 
-1. Secret `OPS_REPO_TOKEN`: fine-grained PAT, contents read/write, scoped to
-   **this repo only**.
-2. After images + chart are published: clone this repo, bump
-   `components.<name>.image.tag` in `charts/auth-stack/values-staging.yaml`,
-   commit to `main` (message: `promote: <component> <tag>`).
-3. Open/refresh a PR applying the same bump to `values-prod.yaml`.
+1. Secret `OPS_REPO_TOKEN`: fine-grained PAT, Contents + Pull requests
+   read/write, scoped to **this repo only**.
+2. After images + chart are published: bump
+   `components.<name>.image.tag` in `charts/auth-stack/values-staging.yaml`
+   on branch `promote/staging`, open a PR, enable auto-merge — it merges
+   itself once the `validate` checks pass.
+3. Open/refresh a PR applying the same bump to `values-prod.yaml`
+   (`promote/prod`) — merged by a human.
 
-ArgoCD detects the commit and converges the matching namespace. No cluster
-credentials ever exist in GitHub.
+`main` is enforced by the `main-protection` ruleset: changes only via PR,
+and only with green `chart (staging)`, `chart (prod)`, and
+`argocd-manifests` checks — an invalid configuration cannot reach the branch
+ArgoCD watches. ArgoCD detects the merge and converges the matching
+namespace. No cluster credentials ever exist in GitHub.
 
 ## Working locally
 
