@@ -31,7 +31,9 @@ TEKO «Verteilte Systeme, Containerisierung» — Orchestrierung
 
 Nothing in either repo runs `kubectl apply` or `helm upgrade` against the
 cluster. GitHub workflows build, validate, and **commit**; ArgoCD pulls.
-The only imperative step is the one-time bootstrap (`bootstrap/README.md`).
+The only imperative step is the one-time bootstrap (`bootstrap/README.md`) -
+automated by the `Doks` PowerShell module as
+`New-DoksCluster | Bootstrap-DoksCluster` (see `Doks/README.md`).
 
 ## Layout
 
@@ -51,6 +53,10 @@ charts/auth-stack/          wrapper chart:
   values-staging.yaml       env overlay — CI promotion target (image tags)
   values-prod.yaml          env overlay — promoted via PR
   templates/                namespace policy only: ResourceQuota, NetworkPolicies
+Doks/                       PowerShell module: create/connect/delete the
+                            throwaway DOKS cluster and run the bootstrap
+                            (New-DoksCluster | Bootstrap-DoksCluster);
+                            see Doks/README.md
 .github/workflows/
   validate.yml              PR/main gate: helm lint + template + kubeconform;
                             uploads the rendered manifests per env as a run
