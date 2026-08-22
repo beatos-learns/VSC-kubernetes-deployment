@@ -4,6 +4,9 @@
 /VSC_Orchestrierung.pdf
 /CI-REPO-NOTES.md
 
+/kubeconfig/
+*-kubeconfig.yaml
+
 # helm dependency artifacts (vendored on demand via `helm dependency build`)
 /charts/auth-stack/charts/
 *.tgz
