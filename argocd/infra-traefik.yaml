@@ -1,48 +1,66 @@
-# Cluster-wide Traefik ingress controller (official chart, MIT license,
-# Traefik Labs). Replaces the in-stack proxy component of generic-stack:
-# one DigitalOcean load balancer shared by all environments.
+# Cluster-wide Traefik ingress controller (official chart, MIT, Traefik Labs).
+# Replaces the in-stack proxy component: one DO load balancer for all
+# environments. No finalizer: deleting this Application must never take the
+# load balancer down as a side effect.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: infra-traefik
   namespace: argocd
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
 spec:
-  # `default` project: an ingress controller needs cluster-scoped
-  # resources (CRDs, ClusterRole, IngressClass) — see argocd/project.yaml.
-  project: default
+  project: infra
   source:
     repoURL: https://traefik.github.io/charts
     chart: traefik
     targetRevision: 41.2.0
     helm:
       valuesObject:
+        deployment:
+          replicas: 2
+        podDisruptionBudget:
+          enabled: true
+          minAvailable: 1
+        topologySpreadConstraints:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: ScheduleAnyway
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: traefik
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
         ingressClass:
           enabled: true
           isDefaultClass: true
-          # Pinned so auth-stack's `ingress.className: traefik` (charts/auth-stack/values.yaml)
-          # resolves — without this it defaults to the Helm release fullname
-          # (`infra-traefik`), which the app Ingresses don't reference.
-          name: traefik
+          name: traefik # referenced by ingress.className in the app values
         service:
           type: LoadBalancer
-        # Traefik must be reachable from the app namespaces' default-deny
-        # posture only in the ingress direction; no special values needed.
+          spec:
+            externalTrafficPolicy: Local # nodes drain cleanly; client IPs preserved
+        tlsOptions:
+          default:
+            minVersion: VersionTLS12
+        api:
+          dashboard: false # enable ad hoc + `kubectl -n traefik port-forward deploy/infra-traefik 8081:8080`
         ingressRoute:
           dashboard:
-            # Binds api@internal/dashboard@internal to the `traefik`
-            # entryPoint (:8080). That port is intentionally NOT in the
-            # LoadBalancer Service, so the dashboard is only reachable via
-            # `kubectl -n traefik port-forward deploy/infra-traefik 8081:8080`
-            # (http://localhost:8081/dashboard/), never from the internet.
-            enabled: true
+            enabled: false
+        log:
+          level: INFO
+          format: json
+        accessLog:
+          enabled: true
+          format: json
         ports:
           web:
-            # Permanent redirect to HTTPS, except cert-manager's ACME HTTP-01
-            # solver (argocd/infra-cert-manager-issuer.yaml), which needs
-            # plain-HTTP access on :80 to answer the challenge.
-            allowACMEByPass: true
+            # HTTP-01 keeps working: Let's Encrypt follows the redirect to HTTPS
             http:
               redirections:
                 entryPoint:
@@ -59,3 +77,9 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true # CRDs exceed the client-side annotation size limit
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

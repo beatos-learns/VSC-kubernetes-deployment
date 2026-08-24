@@ -1,0 +1,26 @@
+{{- with .Values.edge.securityHeaders }}
+{{- if .enabled }}
+{{/*
+  Traefik Middleware attached to the frontend Ingress via the
+  traefik.ingress.kubernetes.io/router.middlewares annotation in values.yaml
+  (<namespace>-<release>-security-headers@kubernetescrd).
+*/}}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ $.Release.Name }}-security-headers
+  labels:
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+spec:
+  headers:
+    stsSeconds: {{ .hstsSeconds | int }}
+    stsIncludeSubdomains: true
+    stsPreload: false
+    frameDeny: true
+    contentTypeNosniff: true
+    referrerPolicy: strict-origin-when-cross-origin
+    customResponseHeaders:
+      X-Permitted-Cross-Domain-Policies: none
+      Permissions-Policy: camera=(), microphone=(), geolocation=()
+{{- end }}
+{{- end }}

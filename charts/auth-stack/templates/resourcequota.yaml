@@ -5,8 +5,7 @@ kind: ResourceQuota
 metadata:
   name: {{ $.Release.Name }}-quota
   labels:
-    app.kubernetes.io/instance: {{ $.Release.Name }}
-    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+    {{- include "auth-stack.labels" $ | nindent 4 }}
 spec:
   hard:
     requests.cpu: {{ .requests.cpu | quote }}
@@ -14,5 +13,10 @@ spec:
     limits.cpu: {{ .limits.cpu | quote }}
     limits.memory: {{ .limits.memory | quote }}
     pods: {{ .pods | quote }}
+    requests.storage: {{ .storage | quote }}
+    persistentvolumeclaims: {{ .persistentVolumeClaims | quote }}
+    # no per-environment load balancers / node ports: the cluster Traefik is the only edge
+    services.loadbalancers: "0"
+    services.nodeports: "0"
 {{- end }}
 {{- end }}

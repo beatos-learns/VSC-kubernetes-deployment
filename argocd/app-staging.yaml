@@ -3,6 +3,8 @@ kind: Application
 metadata:
   name: auth-staging
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -26,3 +28,17 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+    # Pod Security Admission: the namespace itself enforces the restricted
+    # profile (the chart's pods comply; anything else is rejected)
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+        environment: staging
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

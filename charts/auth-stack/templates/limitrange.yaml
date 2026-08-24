@@ -1,0 +1,26 @@
+{{- with .Values.namespacePolicy.limitRange }}
+{{- if .enabled }}
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: {{ $.Release.Name }}-limits
+  labels:
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+spec:
+  limits:
+    # defaults apply only to containers that declare nothing; max caps every container
+    - type: Container
+      defaultRequest:
+        cpu: {{ .container.defaultRequest.cpu | quote }}
+        memory: {{ .container.defaultRequest.memory | quote }}
+      default:
+        cpu: {{ .container.default.cpu | quote }}
+        memory: {{ .container.default.memory | quote }}
+      max:
+        cpu: {{ .container.max.cpu | quote }}
+        memory: {{ .container.max.memory | quote }}
+    - type: PersistentVolumeClaim
+      max:
+        storage: {{ .pvc.max | quote }}
+{{- end }}
+{{- end }}

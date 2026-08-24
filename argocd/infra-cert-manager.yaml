@@ -1,22 +1,15 @@
-# cert-manager (official chart, Apache-2.0, Jetstack/CNCF). Issues and renews
-# the TLS certificates for the Traefik `websecure` entrypoint via ACME
-# HTTP-01, so the JWT cookie's `Secure` flag (auth-portal default) is
-# actually honored by browsers instead of silently dropping the cookie.
+# cert-manager (official chart, Apache-2.0, CNCF): ACME certificates for the
+# Ingress hosts. No finalizer: removing the Application must not revoke the
+# cluster's certificate machinery as a side effect.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: infra-cert-manager
   namespace: argocd
   annotations:
-    # Must be Healthy before infra-cert-manager-issuer creates the
-    # ClusterIssuer (its CRD ships with this chart).
-    argocd.argoproj.io/sync-wave: "-1"
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
+    argocd.argoproj.io/sync-wave: "-2" # CRDs before the ClusterIssuer app
 spec:
-  # `default` project: cert-manager needs cluster-scoped resources (CRDs,
-  # ClusterRole) — see argocd/project.yaml.
-  project: default
+  project: infra
   source:
     repoURL: https://charts.jetstack.io
     chart: cert-manager
@@ -25,6 +18,40 @@ spec:
       valuesObject:
         crds:
           enabled: true
+        global:
+          leaderElection:
+            namespace: cert-manager # keep the leases out of kube-system
+        resources:
+          requests:
+            cpu: 20m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        webhook:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+        cainjector:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
+        startupapicheck:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
   destination:
     server: https://kubernetes.default.svc
     namespace: cert-manager
@@ -35,3 +62,9 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true # CRDs exceed the client-side annotation size limit
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

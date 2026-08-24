@@ -1,22 +1,19 @@
-# The ClusterIssuer for cert-manager (cert-manager-issuer/). Split from
-# infra-cert-manager.yaml into its own Application, gated by sync-wave, so it
-# only applies once the cert-manager CRDs (ClusterIssuer among them) exist.
+# ClusterIssuer chart (charts/cert-manager-issuer), applied after the CRDs:
+# sync-wave -1 (the root app waits thanks to the Application health check in
+# bootstrap/argocd-values.yaml) plus skip-dry-run + retry for the CRD race.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: infra-cert-manager-issuer
   namespace: argocd
   annotations:
-    argocd.argoproj.io/sync-wave: "0"
-  finalizers:
-    - resources-finalizer.argocd.argoproj.io
+    argocd.argoproj.io/sync-wave: "-1"
 spec:
-  # `default` project: ClusterIssuer is a cluster-scoped resource.
-  project: default
+  project: infra
   source:
     repoURL: https://github.com/beatos-learns/VSC-kubernetes-deployment.git
     targetRevision: main
-    path: cert-manager-issuer
+    path: charts/cert-manager-issuer
   destination:
     server: https://kubernetes.default.svc
     namespace: cert-manager
@@ -24,3 +21,11 @@ spec:
     automated:
       prune: true
       selfHeal: true
+    syncOptions:
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

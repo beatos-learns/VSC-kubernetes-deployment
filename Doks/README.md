@@ -26,7 +26,7 @@ elsewhere. `$env:DIGITALOCEAN_ACCESS_TOKEN` overrides both for a session.
 ## Daily use
 
 ```powershell
-New-DoksCluster                    # create (fra1, 1x s-2vcpu-2gb, autoscale 1-5), wait, connect
+New-DoksCluster                    # create (fra1, 2x s-2vcpu-4gb, autoscale 2-5), wait, connect
 kubectl get nodes                  # this window now talks to the new cluster
 Get-DoksCluster                    # what is running (= what is billing) right now
 Use-DoksCluster k8s-test-fra1      # point this window at an existing cluster
@@ -44,7 +44,8 @@ so several clusters can be driven side by side.
 `Bootstrap-DoksCluster` (alias of `Initialize-DoksCluster`) shadows the
 manual procedure in `bootstrap/README.md`: environment namespaces +
 secrets (random `db-password`/`jwt-secret`, optional GHCR pull secret),
-ArgoCD from `bootstrap/argocd-values.yaml`, then the root application -
+ArgoCD (pinned chart version) from `bootstrap/argocd-values.yaml`, then the root
+application `argocd/root.yaml` -
 after which ArgoCD pulls everything from git.
 
 ```powershell
@@ -66,7 +67,7 @@ upgrades in place, the root application applies declaratively.
 | `Get-DoksCluster` | list clusters (name, state, nodes, age — i.e. current billing) |
 | `Use-DoksCluster` | fetch a kubeconfig and point this window at a cluster |
 | `Disconnect-DoksCluster` | drop `$env:KUBECONFIG` in this window |
-| `Remove-DoksCluster` | delete cluster **and** its load balancers/volumes (`-KeepResources` to keep) |
+| `Remove-DoksCluster` | delete cluster **and** its load balancers/volumes (`-KeepResources` to keep); refuses clusters without the module tag unless `-Force` |
 | `Wait-DoksNodeReady` | block until N nodes report Ready |
 | `Get-DoksOption` | list valid `Regions` / `Sizes` / `Versions` |
 | `Bootstrap-DoksCluster` | one-time GitOps bootstrap per `bootstrap/README.md` (alias of `Initialize-DoksCluster`) |
@@ -84,6 +85,7 @@ Later layers win; `Get-DoksDefault` shows the effective result,
 `Test-DoksSetup` shows which layers were loaded:
 
 1. built-in defaults (`fra1`, `s-2vcpu-2gb`, autoscale 1–5, …)
+   — the repo file below raises this to 2× `s-2vcpu-4gb` for the auth stack
 2. `Doks.defaults.psd1` next to the module — the **repo's** settings,
    committed (tag `doks-VSC-deploy`, kubeconfigs to `../kubeconfig`)
 3. `~/.doks/defaults.psd1` — personal overrides, never committed

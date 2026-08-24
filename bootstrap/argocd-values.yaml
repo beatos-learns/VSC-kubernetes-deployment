@@ -1,8 +1,79 @@
-# Values for the official argo-cd chart (https://argoproj.github.io/argo-helm)
-# installed once during bootstrap — see bootstrap/README.md.
+# Values for the official argo-cd chart (https://argoproj.github.io/argo-helm),
+# installed once by the bootstrap and then reconciled by argocd/argocd.yaml.
 configs:
   params:
-    # The API server runs plain HTTP; access is via `kubectl port-forward`
-    # (TLS would otherwise be terminated twice). If the dashboard is later
-    # exposed through Traefik, keep this and terminate TLS at the ingress.
+    # Plain HTTP; access via `kubectl port-forward` only (no public UI). If
+    # exposed through Traefik later, keep this and terminate TLS at the ingress.
     server.insecure: true
+  cm:
+    exec.enabled: "false"
+    timeout.reconciliation: 180s
+    # App-of-apps: report a child Application's own health so sync-waves in
+    # argocd/ actually wait (default: every Application is Healthy on creation).
+    resource.customizations.health.argoproj.io_Application: |
+      hs = {}
+      hs.status = "Progressing"
+      hs.message = ""
+      if obj.status ~= nil then
+        if obj.status.health ~= nil then
+          hs.status = obj.status.health.status
+          if obj.status.health.message ~= nil then
+            hs.message = obj.status.health.message
+          end
+        end
+      end
+      return hs
+  rbac:
+    # Everyone but `admin` is read-only; grant more via SSO groups once an
+    # identity provider is wired in (Dex stays off until then).
+    policy.default: role:readonly
+
+# Unused components off: smaller footprint, smaller attack surface.
+dex:
+  enabled: false
+applicationSet:
+  replicas: 0 # the chart has no `enabled` switch for it
+notifications:
+  enabled: false
+
+# Requests/limits so the cluster autoscaler and node sizing can account for ArgoCD.
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+server:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+redis:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+redisSecretInit:
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
