@@ -28,7 +28,7 @@ generic-stack:
       ingress:
         hosts:
           # TODO: replace with the real production host
-          - host: auth.example.com
+          - host: auth-prod.143-244-204-227.nip.io
 
 namespacePolicy:
   resourceQuota:
