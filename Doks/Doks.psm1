@@ -1140,7 +1140,7 @@ function Initialize-DoksCluster {
     Write-Host '  Watch convergence:   kubectl -n argocd get applications -w'
     Write-Host '  Dashboard password:  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | %{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) }'
     Write-Host '  Dashboard:           kubectl -n argocd port-forward svc/argocd-server 8080:80   ->  http://localhost:8080 (user: admin)'
-    Write-Host '  Load balancer IP:    kubectl -n traefik get svc traefik -o jsonpath="{.status.loadBalancer.ingress[0].ip}"  (point DNS / nip.io hosts at it)'
+    Write-Host '  Load balancer IP:    kubectl -n traefik get svc infra-traefik -o jsonpath="{.status.loadBalancer.ingress[0].ip}"  (point DNS / nip.io hosts at it)'
 }
 
 function Test-DoksSetup {

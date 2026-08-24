@@ -1,7 +1,7 @@
 # App-of-apps: the only Application applied by hand (once, during bootstrap).
 # It syncs the argocd/ directory of this repo, which contains the AppProject,
-# the ingress controller app, and the two environment apps. Everything after
-# this file is pull-based GitOps.
+# the infrastructure apps (Traefik, cert-manager, its ClusterIssuers), and
+# the two environment apps. Everything after this file is pull-based GitOps.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

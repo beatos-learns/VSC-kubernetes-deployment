@@ -44,10 +44,13 @@ done
 
 ```sh
 helm repo add argo https://argoproj.github.io/argo-helm
-helm install argocd argo/argo-cd \
+helm upgrade --install argocd argo/argo-cd \
   --namespace argocd --create-namespace \
   --values argocd-values.yaml
 ```
+
+(`upgrade --install` so that later changes to `argocd-values.yaml` — e.g.
+the Application health check that makes sync waves work — apply in place.)
 
 ## 4. Point ArgoCD at this repo
 
@@ -56,7 +59,7 @@ kubectl apply -f root-application.yaml
 ```
 
 The root app syncs `argocd/`: AppProject, Traefik ingress controller,
-and the two environment Applications. Watch it converge:
+cert-manager plus its ClusterIssuers, and the two environment Applications. Watch it converge:
 
 ```sh
 kubectl -n argocd get applications -w
@@ -79,12 +82,27 @@ kubectl -n argocd port-forward svc/argocd-server 8080:80
 ## 6. DNS / ingress hosts
 
 ```sh
-kubectl -n traefik get svc traefik \
+kubectl -n traefik get svc infra-traefik \
   -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
 ```
 
 Point DNS records at that IP — or use nip.io hosts (e.g.
-`auth-staging.203-0-113-10.nip.io`) — and set the `ingress.hosts` values in
-`charts/auth-stack/values-staging.yaml` / `values-prod.yaml` via a pull
-request (`main` only accepts PRs with green validate checks). ArgoCD picks
-it up after the merge.
+`auth-staging.203-0-113-10.nip.io`) — and set the `ingress.hosts` **and**
+`ingress.tls[].hosts` values in `charts/auth-stack/values-staging.yaml` /
+`values-prod.yaml` via a pull request (`main` only accepts PRs with green
+validate checks). ArgoCD picks it up after the merge.
+
+## 7. TLS (automatic)
+
+Nothing to apply: once the hosts are merged, cert-manager requests a
+Let's Encrypt certificate for each Ingress through Traefik (HTTP-01) and
+stores it in the `tls.secretName` of the environment. Watch it:
+
+```sh
+kubectl -n auth-staging get certificate,challenge
+```
+
+`READY=True` within a minute or two is normal. A pending challenge with
+"too many certificates already issued" is the shared nip.io rate limit —
+see `cert-manager-issuer/cluster-issuer.yaml` for the staging-issuer
+fallback.

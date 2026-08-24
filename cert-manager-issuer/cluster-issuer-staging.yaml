@@ -1,0 +1,20 @@
+# Let's Encrypt STAGING ClusterIssuer - same HTTP-01 wiring as
+# cluster-issuer.yaml, against the staging ACME endpoint: certificates are
+# not browser-trusted, but the rate limits are practically unlimited. Use it
+# while iterating on throwaway clusters (see the rate-limit note in
+# cluster-issuer.yaml) by setting the frontend Ingress annotation
+# `cert-manager.io/cluster-issuer: letsencrypt-staging` in the env values.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: samuel.ramseier@edu.teko.ch
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik

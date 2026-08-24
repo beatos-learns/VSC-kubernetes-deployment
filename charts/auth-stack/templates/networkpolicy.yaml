@@ -5,6 +5,8 @@
     1. deny all ingress by default
     2. allow traffic between pods of this namespace (frontend -> backend -> db)
     3. allow the ingress controller namespace to reach the frontend
+    4. allow the ingress controller namespace to reach cert-manager's HTTP-01
+       solver pods (created in this namespace while a certificate is issued)
   Kubelet probes originate from the node and are unaffected (Cilium host entity).
   Egress is intentionally left open.
 */}}
@@ -57,5 +59,29 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .frontendPort }}
+{{- if .acmeSolver.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-allow-acme-solver
+  labels:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/managed-by: {{ $.Release.Service }}
+spec:
+  podSelector:
+    matchLabels:
+      acme.cert-manager.io/http01-solver: "true"
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .ingressControllerNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .acmeSolver.port }}
+{{- end }}
 {{- end }}
 {{- end }}

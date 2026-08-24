@@ -3,9 +3,9 @@
 # and no cluster-scoped resources (ResourceQuota and NetworkPolicies are
 # namespaced; namespace creation itself is done by the CreateNamespace
 # sync option, which is not subject to this whitelist).
-# The Traefik infrastructure app runs under the built-in `default` project
-# because an ingress controller legitimately needs cluster-scoped resources
-# (CRDs, ClusterRole, IngressClass).
+# The infrastructure apps (Traefik, cert-manager, its ClusterIssuers) run
+# under the built-in `default` project because they legitimately need
+# cluster-scoped resources (CRDs, ClusterRole, IngressClass, ClusterIssuer).
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:

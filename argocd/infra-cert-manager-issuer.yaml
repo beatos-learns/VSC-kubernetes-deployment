@@ -1,6 +1,13 @@
-# The ClusterIssuer for cert-manager (cert-manager-issuer/). Split from
-# infra-cert-manager.yaml into its own Application, gated by sync-wave, so it
-# only applies once the cert-manager CRDs (ClusterIssuer among them) exist.
+# The ClusterIssuers for cert-manager (cert-manager-issuer/). Split from
+# infra-cert-manager.yaml into its own Application so it is only applied once
+# the cert-manager CRDs (ClusterIssuer among them) exist:
+#   - sync-wave 0 (after infra-cert-manager at -1) orders it inside the root
+#     app. Waves only wait for child Applications because
+#     bootstrap/argocd-values.yaml gives the Application kind a health check;
+#     out of the box ArgoCD treats every Application as Healthy on creation.
+#   - SkipDryRunOnMissingResource + retry let the first sync survive the CRD
+#     race regardless: a failed automated sync is NOT retried for the same
+#     commit unless a retry policy is set.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
@@ -24,3 +31,11 @@ spec:
     automated:
       prune: true
       selfHeal: true
+    syncOptions:
+      - SkipDryRunOnMissingResource=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

@@ -75,11 +75,13 @@ jobs:
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
             | tar xz kubeconform
-      - name: Validate Application/AppProject manifests
-        # CRD schemas come from the community CRDs catalog
+      - name: Validate ArgoCD and cert-manager manifests
+        # CRD schemas (Application, AppProject, ClusterIssuer) come from the
+        # community CRDs catalog. The job name is pinned by the
+        # main-protection ruleset - do not rename.
         run: >-
           ./kubeconform -strict -summary
           -kubernetes-version "$KUBERNETES_VERSION"
           -schema-location default
           -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-          argocd/ bootstrap/root-application.yaml
+          argocd/ bootstrap/root-application.yaml cert-manager-issuer/

@@ -1,4 +1,6 @@
-# cert-manager (official chart, Apache-2.0, Jetstack/CNCF). Issues and renews
+# cert-manager (official chart, Apache-2.0; CNCF-graduated, originated at
+# Jetstack UK, now maintained under Venafi/CyberArk - accepted as a passive,
+# self-hosted component, see README "Design decisions"). Issues and renews
 # the TLS certificates for the Traefik `websecure` entrypoint via ACME
 # HTTP-01, so the JWT cookie's `Secure` flag (auth-portal default) is
 # actually honored by browsers instead of silently dropping the cookie.

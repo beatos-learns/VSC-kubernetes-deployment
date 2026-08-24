@@ -24,7 +24,8 @@ TEKO «Verteilte Systeme, Containerisierung» — Orchestrierung
                                                               ▼ pull (no push deploys!)
                                                      ArgoCD @ DOKS
                                                        ├─ ns argocd        ArgoCD itself
-                                                       ├─ ns traefik       ingress controller (1 DO LB)
+                                                       ├─ ns traefik       ingress controller (1 DO LB, TLS)
+                                                       ├─ ns cert-manager  ACME certificates for the hosts
                                                        ├─ ns auth-staging  release "auth"
                                                        └─ ns auth-prod     release "auth"
 ```
@@ -44,15 +45,24 @@ bootstrap/                  one-time cluster setup: ArgoCD install values,
 argocd/                     synced by the root app:
   project.yaml              strict AppProject for the env namespaces
   infra-traefik.yaml        Traefik ingress controller (official chart, MIT)
+  infra-cert-manager.yaml   cert-manager (official chart, Apache-2.0)
+  infra-cert-manager-issuer.yaml
+                            ClusterIssuers from cert-manager-issuer/, wave-
+                            ordered after the cert-manager CRDs
   app-staging.yaml          charts/auth-stack + values-staging.yaml → auth-staging
   app-prod.yaml             charts/auth-stack + values-prod.yaml   → auth-prod
+cert-manager-issuer/        Let's Encrypt ClusterIssuers (prod + staging ACME
+                            endpoint), applied by infra-cert-manager-issuer
 charts/auth-stack/          wrapper chart:
   Chart.yaml                pins generic-stack (OCI dependency from GHCR)
-  values.yaml               DO-common: storageClass, pull secret, ingress on,
-                            in-stack proxy off, baseline resources
+  values.yaml               DO-common: storageClass, pull secret, ingress on
+                            (+ cert-manager annotation), in-stack proxy off,
+                            baseline resources
   values-staging.yaml       env overlay — CI promotion target (image tags)
   values-prod.yaml          env overlay — promoted via PR
   templates/                namespace policy only: ResourceQuota, NetworkPolicies
+                            (default-deny, same-ns, ingress→frontend,
+                            ingress→ACME solver)
 Doks/                       PowerShell module: create/connect/delete the
                             throwaway DOKS cluster and run the bootstrap
                             (New-DoksCluster | Bootstrap-DoksCluster);
@@ -74,6 +84,21 @@ Doks/                       PowerShell module: create/connect/delete the
   Traefik `proxy` component is disabled; a cluster-wide Traefik
   (`argocd/infra-traefik.yaml`) serves standard `Ingress` resources for all
   environments through a single DigitalOcean load balancer.
+* **TLS via cert-manager + Let's Encrypt (HTTP-01).** Traefik redirects
+  `web` → `websecure` permanently (ACME bypass on); the frontend Ingress
+  carries `cert-manager.io/cluster-issuer: letsencrypt-prod` and a per-env
+  `tls` secret, so the auth-portal's `Secure` cookie default actually holds.
+  Hosts are nip.io names on the Traefik LB IP: a fresh cluster means a new
+  IP, new host, new certificate — and nip.io is not on the Public Suffix
+  List, so Let's Encrypt's 50-certs/week limit is shared with every nip.io
+  user (escape hatch: the `letsencrypt-staging` issuer). The NetworkPolicy
+  explicitly allows the ingress controller to reach the HTTP-01 solver pods;
+  default-deny would otherwise silently block every challenge.
+  Stack note: cert-manager is Apache-2.0 and CNCF-graduated (originated at
+  Jetstack UK, now maintained under Venafi/CyberArk); Let's Encrypt is run by
+  ISRG, a US non-profit. Both are accepted as the pragmatic self-hosted /
+  passive exception; a European ACME CA (e.g. ZeroSSL, AT) is a drop-in
+  swap via `externalAccountBinding` on the ClusterIssuer.
 * **Secrets never touch git.** `db-password`, `jwt-secret`, and the GHCR pull
   secret are created out-of-band per namespace (see `bootstrap/README.md`)
   and referenced via `existingSecret`. Upgrade path if full GitOps for
@@ -95,7 +120,9 @@ Doks/                       PowerShell module: create/connect/delete the
 | Replicas (backend/frontend) | 1 / 1 | 2 / 2 (→ HPA in Aufgabe 6) |
 | Quota (req / lim CPU) | 1 / 2 | 2 / 4 |
 | Quota (req / lim memory) | 1Gi / 2Gi | 2Gi / 4Gi |
-| Isolation | default-deny ingress + same-namespace + ingress-controller→frontend | same |
+| Host | `auth-staging.<lb-ip>.nip.io` | `auth-prod.<lb-ip>.nip.io` |
+| TLS secret | `auth-staging-tls` (Let's Encrypt) | `auth-prod-tls` (Let's Encrypt) |
+| Isolation | default-deny ingress + same-namespace + ingress-controller→frontend / ACME solver | same |
 
 ## Promotion contract (CI-repo side)
 

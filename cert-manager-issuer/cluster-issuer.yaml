@@ -4,6 +4,15 @@
 # so Let's Encrypt's validation server can reach the HTTP-01 challenge path
 # on port 80 (entryPoint `web` has allowACMEByPass: true precisely so the
 # http->https redirect doesn't swallow the challenge request).
+#
+# Rate limits: nip.io is NOT on the Public Suffix List, so Let's Encrypt
+# counts every *.nip.io certificate worldwide against one registered domain
+# (50 per week, shared with everyone using nip.io). Every throwaway cluster
+# (new LB IP = new host) costs one certificate. If issuance stalls with
+# "too many certificates already issued", point the Ingress annotation
+# `cert-manager.io/cluster-issuer` at `letsencrypt-staging`
+# (cluster-issuer-staging.yaml; browser-untrusted but unlimited) or move to
+# real DNS. The ACME account email receives expiry warnings only.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:

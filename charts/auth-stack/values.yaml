@@ -96,3 +96,10 @@ namespacePolicy:
     ingressControllerNamespace: traefik
     # frontend main port the ingress controller may reach
     frontendPort: 3000
+    # cert-manager answers ACME HTTP-01 challenges with a solver pod + Ingress
+    # created in THIS namespace (label acme.cert-manager.io/http01-solver).
+    # Under default-deny the ingress controller must be allowed to reach it,
+    # or no certificate is ever issued. 8089 is cert-manager's fixed solver port.
+    acmeSolver:
+      enabled: true
+      port: 8089
