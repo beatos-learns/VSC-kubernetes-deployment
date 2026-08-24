@@ -17,13 +17,6 @@ generic-stack:
     backend:
       image:
         tag: "0.0.1" # promoted by CI
-      ingress:
-        hosts:
-          # same host as frontend; routed by path to the backend service
-          - host: auth-staging.143-244-204-227.nip.io
-            paths:
-              - path: /api
-                pathType: Prefix
 
     frontend:
       image:
