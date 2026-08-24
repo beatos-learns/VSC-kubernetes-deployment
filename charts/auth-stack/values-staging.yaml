@@ -17,14 +17,21 @@ generic-stack:
     backend:
       image:
         tag: "0.0.1" # promoted by CI
+      ingress:
+        hosts:
+          # same host as frontend; routed by path to the backend service
+          - host: auth-staging.143-244-204-227.nip.io
+            paths:
+              - path: /api
+                pathType: Prefix
 
     frontend:
       image:
         tag: "0.0.1" # promoted by CI
       ingress:
         hosts:
-          # TODO: replace with a real host once the Traefik LB IP is known —
-          # either DNS or nip.io, e.g. auth-staging.203-0-113-10.nip.io
+          # nip.io wildcard DNS resolving to the Traefik LB's external IP
+          # (`kubectl get svc -n traefik infra-traefik` -> 143.244.204.227)
           - host: auth-staging.143-244-204-227.nip.io
 
 namespacePolicy:
