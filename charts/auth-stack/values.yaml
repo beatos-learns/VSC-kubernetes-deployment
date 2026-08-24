@@ -20,8 +20,8 @@ generic-stack:
   components:
     # The in-stack Traefik proxy component is replaced by the cluster-wide
     # Traefik ingress controller (argocd/infra-traefik.yaml) plus the
-    # frontend Ingress below: one DO load balancer shared by all
-    # environments instead of one per environment.
+    # frontend/backend Ingress routes below: one DO load balancer shared by
+    # all environments instead of one per environment.
     proxy:
       enabled: false
 
@@ -46,6 +46,10 @@ generic-stack:
         limits:
           cpu: 500m
           memory: 256Mi
+      ingress:
+        enabled: true
+        className: traefik
+        # same host as frontend, routed by path; hosts+paths set per environment
 
     frontend:
       resources:
@@ -86,3 +90,5 @@ namespacePolicy:
     ingressControllerNamespace: traefik
     # frontend main port the ingress controller may reach
     frontendPort: 3000
+    # backend main port the ingress controller may reach (Ingress route /api)
+    backendPort: 8080

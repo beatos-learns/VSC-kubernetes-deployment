@@ -20,6 +20,13 @@ generic-stack:
       replicas: 2
       # TODO(Aufgabe 6): replace static replicas with hpa/pdb values once
       # generic-stack ships per-component `hpa:` and `pdb:` keys.
+      ingress:
+        hosts:
+          # same host as frontend; routed by path to the backend service
+          - host: auth-prod.143-244-204-227.nip.io
+            paths:
+              - path: /api
+                pathType: Prefix
 
     frontend:
       image:
@@ -27,7 +34,8 @@ generic-stack:
       replicas: 2
       ingress:
         hosts:
-          # TODO: replace with the real production host
+          # nip.io wildcard DNS resolving to the Traefik LB's external IP
+          # (`kubectl get svc -n traefik infra-traefik` -> 143.244.204.227)
           - host: auth-prod.143-244-204-227.nip.io
 
 namespacePolicy:
