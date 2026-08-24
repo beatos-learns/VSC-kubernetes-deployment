@@ -21,6 +21,10 @@ spec:
         ingressClass:
           enabled: true
           isDefaultClass: true
+          # Pinned so auth-stack's `ingress.className: traefik` (charts/auth-stack/values.yaml)
+          # resolves — without this it defaults to the Helm release fullname
+          # (`infra-traefik`), which the app Ingresses don't reference.
+          name: traefik
         service:
           type: LoadBalancer
         # Traefik must be reachable from the app namespaces' default-deny
