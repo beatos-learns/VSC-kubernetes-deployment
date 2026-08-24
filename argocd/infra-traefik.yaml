@@ -25,6 +25,14 @@ spec:
           type: LoadBalancer
         # Traefik must be reachable from the app namespaces' default-deny
         # posture only in the ingress direction; no special values needed.
+        ingressRoute:
+          dashboard:
+            # Binds api@internal/dashboard@internal to the `traefik`
+            # entryPoint (:8080). That port is intentionally NOT in the
+            # LoadBalancer Service, so the dashboard is only reachable via
+            # `kubectl -n traefik port-forward deploy/infra-traefik 8081:8080`
+            # (http://localhost:8081/dashboard/), never from the internet.
+            enabled: true
   destination:
     server: https://kubernetes.default.svc
     namespace: traefik
