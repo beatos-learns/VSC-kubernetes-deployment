@@ -37,6 +37,18 @@ spec:
             # `kubectl -n traefik port-forward deploy/infra-traefik 8081:8080`
             # (http://localhost:8081/dashboard/), never from the internet.
             enabled: true
+        ports:
+          web:
+            # Permanent redirect to HTTPS, except cert-manager's ACME HTTP-01
+            # solver (argocd/infra-cert-manager-issuer.yaml), which needs
+            # plain-HTTP access on :80 to answer the challenge.
+            allowACMEByPass: true
+            http:
+              redirections:
+                entryPoint:
+                  to: websecure
+                  scheme: https
+                  permanent: true
   destination:
     server: https://kubernetes.default.svc
     namespace: traefik

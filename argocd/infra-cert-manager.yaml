@@ -1,0 +1,37 @@
+# cert-manager (official chart, Apache-2.0, Jetstack/CNCF). Issues and renews
+# the TLS certificates for the Traefik `websecure` entrypoint via ACME
+# HTTP-01, so the JWT cookie's `Secure` flag (auth-portal default) is
+# actually honored by browsers instead of silently dropping the cookie.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-cert-manager
+  namespace: argocd
+  annotations:
+    # Must be Healthy before infra-cert-manager-issuer creates the
+    # ClusterIssuer (its CRD ships with this chart).
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # `default` project: cert-manager needs cluster-scoped resources (CRDs,
+  # ClusterRole) — see argocd/project.yaml.
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.21.1
+    helm:
+      valuesObject:
+        crds:
+          enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true # CRDs exceed the client-side annotation size limit

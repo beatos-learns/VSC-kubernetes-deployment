@@ -30,6 +30,10 @@ generic-stack:
           # nip.io wildcard DNS resolving to the Traefik LB's external IP
           # (`kubectl get svc -n traefik infra-traefik` -> 143.244.204.227)
           - host: auth-prod.143-244-204-227.nip.io
+        tls:
+          - hosts:
+              - auth-prod.143-244-204-227.nip.io
+            secretName: auth-prod-tls
 
 namespacePolicy:
   resourceQuota:
