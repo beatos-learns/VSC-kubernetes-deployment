@@ -63,7 +63,12 @@ generic-stack:
       ingress:
         enabled: true
         className: traefik
-        # hosts are set per environment
+        annotations:
+          # cert-manager (argocd/infra-cert-manager.yaml) watches this
+          # annotation and requests/renews the cert named in ingress.tls
+          # below via the ClusterIssuer (cert-manager-issuer/).
+          cert-manager.io/cluster-issuer: letsencrypt-prod
+        # hosts and tls are set per environment
 
 # ---------------------------------------------------------------------------
 # Wrapper-chart namespace policy (rendered by templates/)
