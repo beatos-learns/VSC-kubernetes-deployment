@@ -1,0 +1,133 @@
+{{- with .Values.dbBackup }}
+{{- if .enabled }}
+{{/*
+  pg_dump CronJob with the stack's own PostgreSQL image (same major version as
+  the server: the tag follows components.db.image.tag unless overridden).
+  Dumps land on a dedicated PVC that is never pruned or cascade-deleted;
+  the newest `keep` are retained. Restore: templates/db-restore-job.yaml.
+*/}}
+{{- $gs := index $.Values "generic-stack" }}
+{{- $db := $gs.components.db }}
+{{- $name := printf "%s-db-backup" $.Release.Name }}
+{{- $tag := .image.tag | default $db.image.tag }}
+{{- $image := printf "%s/%s:%s" .image.registry .image.repository (toString $tag) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: db-backup
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+  annotations:
+    # backups outlive the Application: delete this PVC explicitly if wanted
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with $gs.global.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .storage }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: db-backup
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+spec:
+  schedule: {{ .schedule | quote }}
+  timeZone: Etc/UTC
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: db-backup # selected by templates/networkpolicy.yaml
+            {{- include "auth-stack.labels" $ | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          {{- with $gs.global.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: {{ $db.security.uid }}
+            runAsGroup: {{ $db.security.gid }}
+            fsGroup: {{ $db.security.gid }} # PVC root and the 0440 secret file
+            fsGroupChangePolicy: OnRootMismatch
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: pg-dump
+              image: {{ $image }}
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "-euo", "pipefail", "-c"] # the image ENTRYPOINT is the postgres supervisor
+              args:
+                - |
+                  export PGPASSWORD="$(cat /run/secrets/db-password)"
+                  rm -f -- "${BACKUP_DIR}"/*.dump.part
+                  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+                  out="${BACKUP_DIR}/${PGDATABASE}-${ts}.dump"
+                  pg_dump --format=custom --no-password --file="${out}.part"
+                  mv -- "${out}.part" "${out}"
+                  ls -1 "${BACKUP_DIR}"/*.dump | sort -r | tail -n +$((BACKUP_KEEP + 1)) | xargs -r rm -f --
+                  ls -l "${BACKUP_DIR}"
+              env:
+                - name: PGHOST
+                  value: {{ $.Release.Name }}-db
+                - name: PGPORT
+                  value: {{ $db.ports.main.servicePort | default $db.ports.main.containerPort | quote }}
+                - name: PGUSER
+                  value: {{ $db.env.POSTGRES_USER | quote }}
+                - name: PGDATABASE
+                  value: {{ $db.env.POSTGRES_DB | quote }}
+                - name: PGCONNECT_TIMEOUT
+                  value: "10"
+                - name: BACKUP_DIR
+                  value: /backup
+                - name: BACKUP_KEEP
+                  value: {{ .keep | quote }}
+              securityContext:
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                {{- toYaml .resources | nindent 16 }}
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+                - name: secret
+                  mountPath: /run/secrets
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: {{ $name }}
+            - name: secret
+              secret:
+                secretName: {{ tpl $db.existingSecret $ }}
+                items:
+                  - key: db-password
+                    path: db-password
+                defaultMode: 0440
+            - name: tmp
+              emptyDir: {}
+{{- end }}
+{{- end }}

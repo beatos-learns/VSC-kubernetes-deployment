@@ -6,12 +6,12 @@
 .DESCRIPTION
 
     ONE-TIME SETUP
-        Import-Module E:\temp\digitalOcean\Doks.psm1
+        Import-Module .\Doks
         Set-DoksToken                      # paste the API token once -> Credential Manager
         Test-DoksSetup                     # doctl/kubectl/token/API all green?
 
     DAILY USE
-        New-DoksCluster                    # create (fra1, 1x s-2vcpu-2gb, autoscale 1-5), wait, connect
+        New-DoksCluster                    # create (fra1, 2x s-2vcpu-4gb, autoscale 2-5), wait, connect
         kubectl get nodes                  # this window now talks to the new cluster
         Get-DoksCluster                    # what is running (= what is billing) right now
         Use-DoksCluster k8s-test-fra1      # point this window at an existing cluster
@@ -47,6 +47,7 @@ $script:Defaults = [ordered]@{
 $script:DefaultSources = New-Object System.Collections.Generic.List[string]
 
 $script:AuthVerified  = $false
+$script:ApiToken      = $null   # exported to doctl per invocation only (Invoke-Doctl), never to the session
 $script:ToolPaths     = @{}
 $script:IsWindowsHost = ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT)
 
@@ -280,8 +281,11 @@ function Write-DoksStoredToken {
         return
     }
     $file = Get-DoksTokenFilePath
+    $chmod = Get-Command -Name chmod -CommandType Application -ErrorAction SilentlyContinue
+    if ($chmod) { & $chmod.Source 700 (Split-Path -Path $file -Parent) }
+    if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { [System.IO.File]::WriteAllText($file, '') }
+    if ($chmod) { & $chmod.Source 600 $file }   # lock the file down before the token lands in it
     [System.IO.File]::WriteAllText($file, $Token + "`n", [System.Text.UTF8Encoding]::new($false))
-    if (Get-Command -Name chmod -CommandType Application -ErrorAction SilentlyContinue) { & chmod 600 $file }
 }
 
 function Remove-DoksStoredToken {
@@ -376,7 +380,27 @@ function Invoke-DoksNative {
 
 function Invoke-Doctl {
     param([Parameter(Mandatory)][string[]]$Arguments, [switch]$Json, [switch]$Stream)
-    Invoke-DoksNative -Tool doctl -Arguments $Arguments -Json:$Json -Stream:$Stream
+    if ($script:ApiToken) {
+        Invoke-DoksWithToken -Token $script:ApiToken -ScriptBlock { Invoke-DoksNative -Tool doctl -Arguments $Arguments -Json:$Json -Stream:$Stream }
+    }
+    else {
+        Invoke-DoksNative -Tool doctl -Arguments $Arguments -Json:$Json -Stream:$Stream
+    }
+}
+
+function Invoke-KubectlManifest {
+    # Applies a manifest passed via stdin so secret material never appears on a
+    # command line, in process listings or in error text.
+    param([Parameter(Mandatory)][string]$Manifest, [string[]]$Arguments = @('apply', '-f', '-'))
+    $exe = Get-DoksTool -Name kubectl
+    $ErrorActionPreference = 'Continue'
+    $raw  = @($Manifest | & $exe @Arguments 2>&1)
+    $code = $LASTEXITCODE
+    if ($code -ne 0) {
+        $text = @($raw | ForEach-Object { [string]$_ } | Where-Object { $_ -and $_.Trim() }) -join [Environment]::NewLine
+        throw "kubectl $($Arguments -join ' ') failed (exit code $code): $(Get-DoksErrorText -Text $text)"
+    }
+    foreach ($line in $raw) { Write-Verbose "[kubectl] $line" }
 }
 
 function Invoke-Kubectl {
@@ -428,7 +452,9 @@ function Set-DoksToken {
 
     $user = 'digitalocean'
     if (-not $SkipValidation) {
-        $account = Invoke-DoksWithToken -Token $plain -ScriptBlock { Get-DoksAccountInfo }
+        $saved = $script:ApiToken
+        $script:ApiToken = $plain
+        try { $account = Get-DoksAccountInfo } finally { $script:ApiToken = $saved }
         if ($account.email) { $user = $account.email }
     }
 
@@ -459,8 +485,9 @@ function Connect-DoksAccount {
         [switch]$Quiet
     )
     $setByUs = $false
+    $script:ApiToken = $null
     if ($Token) {
-        $env:DIGITALOCEAN_ACCESS_TOKEN = ConvertFrom-DoksSecureString -SecureString $Token
+        $script:ApiToken = ConvertFrom-DoksSecureString -SecureString $Token
         $source = 'the -Token parameter (this session only)'
         $setByUs = $true
     }
@@ -470,7 +497,7 @@ function Connect-DoksAccount {
     else {
         $stored = Read-DoksStoredToken
         if ($stored) {
-            $env:DIGITALOCEAN_ACCESS_TOKEN = $stored.Token
+            $script:ApiToken = $stored.Token
             $source = Get-DoksTokenStoreName
             $setByUs = $true
         }
@@ -487,7 +514,7 @@ function Connect-DoksAccount {
     }
     catch {
         $script:AuthVerified = $false
-        if ($setByUs) { Remove-Item -Path Env:DIGITALOCEAN_ACCESS_TOKEN -ErrorAction SilentlyContinue }
+        if ($setByUs) { $script:ApiToken = $null }
         if ($source -eq "doctl's own configuration") {
             throw "No DigitalOcean API token available. Run Set-DoksToken once to store yours ($(Get-DoksTokenStoreName)), or set `$env:DIGITALOCEAN_ACCESS_TOKEN for this session. doctl said: $($_.Exception.Message)"
         }
@@ -506,6 +533,7 @@ function Connect-DoksAccount {
 function Disconnect-DoksAccount {
     [CmdletBinding()]
     param()
+    $script:ApiToken = $null
     if ($env:DIGITALOCEAN_ACCESS_TOKEN) {
         Remove-Item -Path Env:DIGITALOCEAN_ACCESS_TOKEN
         Write-Host 'Removed $env:DIGITALOCEAN_ACCESS_TOKEN from this session.'
@@ -922,6 +950,11 @@ function Remove-DoksCluster {
             Write-Warning "No cluster named '$Name' exists."
             return
         }
+        $ownTags = @(([string]$script:Defaults.Tag) -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        $marked = @($ownTags | Where-Object { $cluster.Tags -contains $_ })
+        if ($ownTags.Count -gt 0 -and $marked.Count -eq 0 -and -not $Force) {
+            throw "Cluster '$Name' does not carry the tag '$($ownTags -join ',')' that marks clusters this module created (tags: $(if ($cluster.Tags) { $cluster.Tags -join ', ' } else { 'none' })). Refusing to delete it; pass -Force to override."
+        }
         $action = if ($KeepResources) { 'Delete cluster (keep its load balancers/volumes)' } else { 'Delete cluster AND its load balancers/volumes' }
         if (-not $PSCmdlet.ShouldProcess("$Name ($($cluster.Nodes), age $($cluster.Age))", $action)) { return }
 
@@ -978,9 +1011,9 @@ function Initialize-DoksCluster {
           2. Secrets   - per environment namespace: create the namespace, an
                          'auth-stack-secrets' Secret (random db-password + jwt-secret),
                          and optionally a GHCR image pull Secret (-GhcrUsername/-GhcrToken).
-          3. ArgoCD    - 'helm upgrade --install' from bootstrap/argocd-values.yaml
+          3. ArgoCD    - 'helm upgrade --install' (pinned chart version) from bootstrap/argocd-values.yaml
                          into the 'argocd' namespace.
-          4. Root app  - 'kubectl apply' bootstrap/root-application.yaml; ArgoCD
+          4. Root app  - 'kubectl apply' argocd/root.yaml; ArgoCD
                          takes over from here (app-of-apps).
           5. Handover  - print how to watch convergence, open the dashboard, and
                          find the load balancer IP for DNS.
@@ -1004,7 +1037,8 @@ function Initialize-DoksCluster {
 
     .PARAMETER GhcrUsername
         GitHub username for the GHCR image pull Secret. Omit if the GHCR packages
-        are public (then also remove global.imagePullSecrets from the chart values).
+        are public. To use it, set generic-stack.global.imagePullSecrets to
+        [{ name: ghcr-pull }] in charts/auth-stack/values.yaml (commented example there).
 
     .PARAMETER GhcrToken
         Fine-grained PAT with read:packages only, as a SecureString.
@@ -1012,11 +1046,16 @@ function Initialize-DoksCluster {
 
     .PARAMETER PullSecretName
         Name of the docker-registry pull Secret. Default: ghcr-pull
-        (referenced via global.imagePullSecrets in charts/auth-stack/values.yaml).
+        (to be referenced via generic-stack.global.imagePullSecrets in charts/auth-stack/values.yaml).
 
     .PARAMETER RepoRoot
         Repository root containing bootstrap/argocd-values.yaml and
-        bootstrap/root-application.yaml. Default: the folder above this module.
+        argocd/root.yaml. Default: the folder above this module.
+
+    .PARAMETER ArgoCdChartVersion
+        argo-cd Helm chart version to install. Default: the targetRevision of
+        the argo-cd source in argocd/argocd.yaml (single source of truth; ArgoCD
+        reconciles itself from that file afterwards).
 
     .EXAMPLE
         New-DoksCluster | Initialize-DoksCluster
@@ -1050,23 +1089,31 @@ function Initialize-DoksCluster {
         [string]$GhcrUsername,
         [securestring]$GhcrToken,
         [string]$PullSecretName = 'ghcr-pull',
-        [string]$RepoRoot
+        [string]$RepoRoot,
+        [string]$ArgoCdChartVersion
     )
 
     if (-not $RepoRoot) { $RepoRoot = Split-Path -Path $PSScriptRoot -Parent }
     $RepoRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RepoRoot)
-    $argocdValues = Join-Path -Path $RepoRoot -ChildPath 'bootstrap\argocd-values.yaml'
-    $rootApp      = Join-Path -Path $RepoRoot -ChildPath 'bootstrap\root-application.yaml'
-    foreach ($required in $argocdValues, $rootApp) {
+    $argocdValues = Join-Path -Path (Join-Path -Path $RepoRoot -ChildPath 'bootstrap') -ChildPath 'argocd-values.yaml'
+    $rootApp      = Join-Path -Path (Join-Path -Path $RepoRoot -ChildPath 'argocd') -ChildPath 'root.yaml'
+    $argocdApp    = Join-Path -Path (Join-Path -Path $RepoRoot -ChildPath 'argocd') -ChildPath 'argocd.yaml'
+    foreach ($required in $argocdValues, $rootApp, $argocdApp) {
         if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
             throw "Bootstrap file not found: $required. Pass -RepoRoot pointing at the ops repository."
         }
+    }
+    if (-not $ArgoCdChartVersion) {
+        $match = Select-String -LiteralPath $argocdApp -Pattern '^\s+targetRevision:\s*(\S+)' | Select-Object -First 1
+        if (-not $match) { throw "Cannot read the argo-cd chart version from $argocdApp; pass -ArgoCdChartVersion." }
+        $ArgoCdChartVersion = $match.Matches[0].Groups[1].Value
     }
     Get-DoksTool -Name helm | Out-Null
 
     if ($GhcrUsername -and -not $GhcrToken) {
         $GhcrToken = Read-Host -Prompt "GHCR PAT for $GhcrUsername, read:packages only (input is hidden)" -AsSecureString
     }
+    if ($GhcrUsername -and $GhcrToken.Length -eq 0) { throw "No GHCR token entered for $GhcrUsername. Omit -GhcrUsername for public packages." }
 
     # --- 1. Connect -------------------------------------------------------
     if ($ClusterName) { Use-DoksCluster -Name $ClusterName -Quiet }
@@ -1093,11 +1140,18 @@ function Initialize-DoksCluster {
             Write-Host "  Secret $SecretName exists - left untouched (a new db-password would not match the initialized PostgreSQL PVC)."
         }
         else {
-            Invoke-Kubectl -Arguments @(
-                '--namespace', $ns, 'create', 'secret', 'generic', $SecretName,
-                "--from-literal=db-password=$(New-DoksRandomSecret -Bytes 24)",
-                "--from-literal=jwt-secret=$(New-DoksRandomSecret -Bytes 48)"
-            ) | Out-Null
+            $manifest = @"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $SecretName
+  namespace: $ns
+type: Opaque
+stringData:
+  db-password: "$(New-DoksRandomSecret -Bytes 24)"
+  jwt-secret: "$(New-DoksRandomSecret -Bytes 48)"
+"@
+            Invoke-KubectlManifest -Manifest $manifest -Arguments @('create', '-f', '-')
             Write-Host "  Secret $SecretName created (random db-password + jwt-secret)." -ForegroundColor Green
         }
 
@@ -1106,12 +1160,20 @@ function Initialize-DoksCluster {
                 Write-Host "  Pull secret $PullSecretName exists - left untouched."
             }
             else {
-                Invoke-Kubectl -Arguments @(
-                    '--namespace', $ns, 'create', 'secret', 'docker-registry', $PullSecretName,
-                    '--docker-server=ghcr.io',
-                    "--docker-username=$GhcrUsername",
-                    "--docker-password=$(ConvertFrom-DoksSecureString -SecureString $GhcrToken)"
-                ) | Out-Null
+                $pat    = ConvertFrom-DoksSecureString -SecureString $GhcrToken
+                $auth   = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("${GhcrUsername}:$pat"))
+                $config = @{ auths = @{ 'ghcr.io' = @{ username = $GhcrUsername; password = $pat; auth = $auth } } } | ConvertTo-Json -Compress -Depth 5
+                $manifest = @"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $PullSecretName
+  namespace: $ns
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: $([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($config)))
+"@
+                Invoke-KubectlManifest -Manifest $manifest -Arguments @('create', '-f', '-')
                 Write-Host "  Pull secret $PullSecretName created." -ForegroundColor Green
             }
         }
@@ -1121,14 +1183,21 @@ function Initialize-DoksCluster {
     }
 
     # --- 3. ArgoCD (dedicated namespace) ----------------------------------
-    Write-Host 'Installing/upgrading ArgoCD ...' -ForegroundColor Cyan
-    Invoke-Helm -Arguments @('repo', 'add', 'argo', 'https://argoproj.github.io/argo-helm', '--force-update') | Out-Null
-    Invoke-Helm -Arguments @('repo', 'update', 'argo') | Out-Null
-    Invoke-Helm -Arguments @(
-        'upgrade', '--install', 'argocd', 'argo/argo-cd',
-        '--namespace', 'argocd', '--create-namespace',
-        '--values', $argocdValues, '--wait'
-    ) -Stream
+    $selfManaged = $false
+    try { $selfManaged = Test-DoksKubectlResource -Kind application -Name argocd -Namespace argocd } catch { }
+    if ($selfManaged) {
+        Write-Host 'ArgoCD already manages itself (Application argocd exists) - change bootstrap/argocd-values.yaml via PR instead.' -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host "Installing ArgoCD (chart $ArgoCdChartVersion) ..." -ForegroundColor Cyan
+        Invoke-Helm -Arguments @('repo', 'add', 'argo', 'https://argoproj.github.io/argo-helm', '--force-update') | Out-Null
+        Invoke-Helm -Arguments @('repo', 'update', 'argo') | Out-Null
+        Invoke-Helm -Arguments @(
+            'upgrade', '--install', 'argocd', 'argo/argo-cd', '--version', $ArgoCdChartVersion,
+            '--namespace', 'argocd', '--create-namespace',
+            '--values', $argocdValues, '--wait'
+        ) -Stream
+    }
 
     # --- 4. Root application (ArgoCD takes over from here) ----------------
     Invoke-Kubectl -Arguments @('apply', '-f', $rootApp) | Out-Null
@@ -1140,7 +1209,8 @@ function Initialize-DoksCluster {
     Write-Host '  Watch convergence:   kubectl -n argocd get applications -w'
     Write-Host '  Dashboard password:  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | %{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) }'
     Write-Host '  Dashboard:           kubectl -n argocd port-forward svc/argocd-server 8080:80   ->  http://localhost:8080 (user: admin)'
-    Write-Host '  Load balancer IP:    kubectl -n traefik get svc traefik -o jsonpath="{.status.loadBalancer.ingress[0].ip}"  (point DNS / nip.io hosts at it)'
+    Write-Host '  Rotate admin pw:     argocd login localhost:8080 --plaintext; argocd account update-password; kubectl -n argocd delete secret argocd-initial-admin-secret'
+    Write-Host '  Load balancer IP:    kubectl -n traefik get svc infra-traefik -o jsonpath="{.status.loadBalancer.ingress[0].ip}"  (point DNS / nip.io hosts at it)'
 }
 
 function Test-DoksSetup {

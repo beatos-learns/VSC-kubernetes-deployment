@@ -1,16 +1,15 @@
-# AppProject for the application environments. Deliberately strict:
-# only this repo as source, only the two env namespaces as destinations,
-# and no cluster-scoped resources (ResourceQuota and NetworkPolicies are
-# namespaced; namespace creation itself is done by the CreateNamespace
-# sync option, which is not subject to this whitelist).
-# The Traefik infrastructure app runs under the built-in `default` project
-# because an ingress controller legitimately needs cluster-scoped resources
-# (CRDs, ClusterRole, IngressClass).
+# AppProject for the environment apps. Strict on purpose: only this repo as
+# source, only the two env namespaces, the Namespace itself as the only
+# cluster-scoped kind (CreateNamespace + managed PSA labels), and only the
+# namespaced kinds the auth-stack chart renders (no RBAC, no Secrets -
+# secrets are created out-of-band, see bootstrap/README.md).
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
   name: auth-stack
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
 spec:
   description: Auth stack environments (staging + production)
   sourceRepos:
@@ -20,7 +19,37 @@ spec:
       namespace: auth-staging
     - server: https://kubernetes.default.svc
       namespace: auth-prod
-  clusterResourceWhitelist: []
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
   namespaceResourceWhitelist:
-    - group: "*"
-      kind: "*"
+    - group: apps
+      kind: Deployment
+    - group: apps
+      kind: StatefulSet
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: ResourceQuota
+    - group: ""
+      kind: LimitRange
+    - group: networking.k8s.io
+      kind: Ingress
+    - group: networking.k8s.io
+      kind: NetworkPolicy
+    - group: autoscaling
+      kind: HorizontalPodAutoscaler
+    - group: policy
+      kind: PodDisruptionBudget
+    - group: batch
+      kind: CronJob
+    - group: batch
+      kind: Job
+    - group: traefik.io
+      kind: Middleware
+    - group: monitoring.coreos.com
+      kind: PodMonitor

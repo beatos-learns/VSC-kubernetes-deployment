@@ -1,0 +1,8 @@
+# Staging on purpose: throwaway clusters get a new nip.io host (= new
+# certificate) each time and nip.io is not on the Public Suffix List, so the
+# production rate limit is shared with every nip.io user. Not browser-trusted.
+name: letsencrypt-staging # referenced by ingress annotations in auth-stack
+acme:
+  server: https://acme-staging-v02.api.letsencrypt.org/directory
+  email: samuel.ramseier@edu.teko.ch # expiry notices only
+ingressClassName: traefik

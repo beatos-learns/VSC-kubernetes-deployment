@@ -1,0 +1,8 @@
+apiVersion: v2
+name: cert-manager-issuer
+description: >-
+  ClusterIssuer for cert-manager: Let's Encrypt staging, HTTP-01 through the
+  cluster-wide Traefik ingress controller. Cluster-scoped, so it lives in its
+  own chart under the `infra` AppProject (argocd/infra-cert-manager-issuer.yaml).
+type: application
+version: 0.1.0

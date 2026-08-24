@@ -3,6 +3,8 @@ kind: Application
 metadata:
   name: auth-prod
   namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -20,10 +22,22 @@ spec:
     server: https://kubernetes.default.svc
     namespace: auth-prod
   syncPolicy:
-    # Prod syncs automatically too — the human gate is the promotion PR
+    # Prod syncs automatically too - the human gate is the promotion PR
     # into values-prod.yaml, not a manual sync button.
     automated:
       prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+        environment: production
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

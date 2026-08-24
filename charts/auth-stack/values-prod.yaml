@@ -1,8 +1,9 @@
 # ---------------------------------------------------------------------------
-# Production environment (namespace: auth-prod)
+# Production environment (namespace: auth-prod) - only what differs from
+# values.yaml.
 #
-# The image tags below are promoted from staging via pull request opened by
-# the CI pipeline in VSC-kubernetes-containers (human-gated promotion).
+# The image tags below are promoted from staging via pull request (opened by
+# the planned CI promote job, merged by a human; until it exists, by hand).
 # Do not reformat these lines.
 # ---------------------------------------------------------------------------
 
@@ -17,30 +18,54 @@ generic-stack:
     backend:
       image:
         tag: "0.0.1" # promoted via PR
-      replicas: 2
-      # TODO(Aufgabe 6): replace static replicas with hpa/pdb values once
-      # generic-stack ships per-component `hpa:` and `pdb:` keys.
+      # Aufgabe 6: autoscaled (the chart omits `replicas` from the workload)
+      hpa:
+        enabled: true
+        minReplicas: 2
+        maxReplicas: 5
+        targetCPUUtilizationPercentage: 70
+        behavior:
+          scaleDown:
+            stabilizationWindowSeconds: 300
+            policies:
+              - type: Pods
+                value: 1
+                periodSeconds: 60
+      # scales with the HPA (minAvailable would be a fixed floor)
+      pdb:
+        enabled: true
+        maxUnavailable: 1
 
     frontend:
       image:
         tag: "0.0.1" # promoted via PR
       replicas: 2
+      pdb:
+        enabled: true
+        maxUnavailable: 1
       ingress:
+        # nip.io host on the Traefik LB IP (bootstrap/README.md step 6)
         hosts:
-          # nip.io wildcard DNS resolving to the Traefik LB's external IP
-          # (`kubectl get svc -n traefik infra-traefik` -> 143.244.204.227)
           - host: auth-prod.143-244-204-227.nip.io
         tls:
           - hosts:
               - auth-prod.143-244-204-227.nip.io
             secretName: auth-prod-tls
 
+dbBackup:
+  keep: 7
+  storage: 5Gi
+
 namespacePolicy:
+  # limits.cpu 5: db 0.5 + frontend 2x0.2 + backend 5x0.5 + surge 0.5 + 0.2 +
+  # backup 0.5 + ACME solver 0.1 = 4.7 (memory worst case ~2.6Gi of 4Gi)
   resourceQuota:
     requests:
       cpu: "2"
       memory: 2Gi
     limits:
-      cpu: "4"
+      cpu: "5"
       memory: 4Gi
     pods: 20
+    storage: 10Gi
+    persistentVolumeClaims: 3

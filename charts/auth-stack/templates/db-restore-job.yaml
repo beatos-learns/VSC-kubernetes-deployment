@@ -1,0 +1,103 @@
+{{- with .Values.dbBackup }}
+{{- if and .enabled .restore.file }}
+{{/*
+  One-off restore Job, rendered only while dbBackup.restore.file names a dump
+  on the backup PVC. Procedure (bootstrap/README.md): scale the backend to 0,
+  set the value via PR, wait for the Job, clear the value, scale back up.
+  Same image, identity, network policy labels and secret projection as the
+  backup CronJob; pg_restore drops and recreates the objects it restores.
+*/}}
+{{- $gs := index $.Values "generic-stack" }}
+{{- $db := $gs.components.db }}
+{{- $name := printf "%s-db-backup" $.Release.Name }}
+{{- $tag := .image.tag | default $db.image.tag }}
+{{- $image := printf "%s/%s:%s" .image.registry .image.repository (toString $tag) }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $.Release.Name }}-db-restore-{{ .restore.file | sha256sum | trunc 8 }}
+  labels:
+    app.kubernetes.io/name: db-backup
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-options: Replace=true
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 1800
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-backup # selected by templates/networkpolicy.yaml
+        {{- include "auth-stack.labels" $ | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with $gs.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $db.security.uid }}
+        runAsGroup: {{ $db.security.gid }}
+        fsGroup: {{ $db.security.gid }}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pg-restore
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-euo", "pipefail", "-c"]
+          args:
+            - |
+              export PGPASSWORD="$(cat /run/secrets/db-password)"
+              test -f "/backup/${RESTORE_FILE}"
+              pg_restore --no-password --clean --if-exists --exit-on-error --dbname="${PGDATABASE}" "/backup/${RESTORE_FILE}"
+              echo "restored ${RESTORE_FILE}"
+          env:
+            - name: PGHOST
+              value: {{ $.Release.Name }}-db
+            - name: PGPORT
+              value: {{ $db.ports.main.servicePort | default $db.ports.main.containerPort | quote }}
+            - name: PGUSER
+              value: {{ $db.env.POSTGRES_USER | quote }}
+            - name: PGDATABASE
+              value: {{ $db.env.POSTGRES_DB | quote }}
+            - name: PGCONNECT_TIMEOUT
+              value: "10"
+            - name: RESTORE_FILE
+              value: {{ .restore.file | quote }}
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          volumeMounts:
+            - name: backup
+              mountPath: /backup
+              readOnly: true
+            - name: secret
+              mountPath: /run/secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: backup
+          persistentVolumeClaim:
+            claimName: {{ $name }}
+        - name: secret
+          secret:
+            secretName: {{ tpl $db.existingSecret $ }}
+            items:
+              - key: db-password
+                path: db-password
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+{{- end }}

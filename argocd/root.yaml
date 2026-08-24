@@ -1,0 +1,31 @@
+# App-of-apps: the only Application applied by hand (once, during bootstrap:
+# `kubectl apply -f argocd/root.yaml`); afterwards it manages itself with the
+# rest of this directory. `prune: false` and no finalizer on purpose: removing
+# a file from argocd/ (or deleting the root app) must never cascade into
+# deleting the platform or an environment - remove those Applications
+# explicitly. `default` project because the AppProjects it creates cannot
+# exist before it syncs.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/beatos-learns/VSC-kubernetes-deployment.git
+    targetRevision: main
+    path: argocd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

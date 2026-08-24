@@ -1,0 +1,43 @@
+# metrics-server (Kubernetes SIG, Apache-2.0): DOKS does not ship one and the
+# HPA cannot scale without the metrics API. Own namespace, restricted-PSA
+# compliant chart defaults; its auth-reader RoleBinding lives in kube-system.
+# Wave 0: nothing needs it at deploy time, so it must not gate the environments.
+# If pods stay unready because the kubelet serving certificates are not
+# CA-signed, add `args: [--kubelet-insecure-tls]`.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-metrics-server
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: infra
+  source:
+    repoURL: https://kubernetes-sigs.github.io/metrics-server/
+    chart: metrics-server
+    targetRevision: 3.14.0
+    helm:
+      valuesObject:
+        resources:
+          requests:
+            cpu: 20m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: metrics-server
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

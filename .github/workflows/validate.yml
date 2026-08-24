@@ -1,6 +1,7 @@
 # Validation gate for the Ops repo. Deliberately deploy-free:
 # ArgoCD pulls from main — this workflow only proves that what lands
-# on main renders and conforms (Aufgabe 4: no imperative deployment).
+# on main renders, conforms, and references signed, existing artifacts
+# (Aufgabe 4: no imperative deployment).
 name: validate
 
 on:
@@ -14,20 +15,49 @@ permissions:
 env:
   # keep in sync with the DOKS cluster version
   KUBERNETES_VERSION: "1.33.1"
+  HELM_VERSION: v3.21.4
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  CRD_SCHEMAS: 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
+  # every image/chart must carry a keyless signature from the CI repo's build workflow
+  COSIGN_IDENTITY_RE: '^https://github.com/beatos-learns/VSC-kubernetes-containers/.github/workflows/build.yml@refs/heads/(master|main)$'
+  COSIGN_OIDC_ISSUER: https://token.actions.githubusercontent.com
 
 jobs:
   chart:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         environment: [staging, prod]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+        with:
+          cosign-release: v2.6.5
+
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -sSfL -o kubeconform.tgz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tgz" | sha256sum -c -
+          tar -xzf kubeconform.tgz kubeconform
 
       - name: Vendor the generic-stack dependency
         run: helm dependency build charts/auth-stack
+
+      - name: Verify the chart dependency is signed by the CI repo
+        run: |
+          set -euo pipefail
+          version=$(awk '/^  version:/{print $2}' charts/auth-stack/Chart.lock)
+          cosign verify --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
+            --certificate-identity-regexp "$COSIGN_IDENTITY_RE" \
+            "ghcr.io/beatos-learns/vsc-kubernetes-containers/charts/generic-stack:$version" >/dev/null
+          echo "generic-stack $version: signature OK"
 
       - name: Lint
         run: >-
@@ -45,41 +75,63 @@ jobs:
           > rendered-${{ matrix.environment }}.yaml
 
       # Debug aid for red-gated PRs: what this commit would deploy.
-      # Runs even when a later step fails; skipped silently when lint or
-      # render already failed and there is nothing to upload.
       - name: Upload rendered manifests
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rendered-${{ matrix.environment }}
           path: rendered-${{ matrix.environment }}.yaml
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 90
 
-      - name: Install kubeconform
-        run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
-            | tar xz kubeconform
       - name: Validate rendered manifests
         run: >-
           ./kubeconform -strict -summary
           -kubernetes-version "$KUBERNETES_VERSION"
+          -schema-location default
+          -schema-location "$CRD_SCHEMAS"
           rendered-${{ matrix.environment }}.yaml
 
+      # A promotion may only merge when every referenced image exists in GHCR
+      # and was signed by the CI repo's build workflow (keyless, Rekor-logged).
+      - name: Verify image references exist and are signed
+        run: |
+          set -euo pipefail
+          refs=$(grep -hoE '^\s+image: *"?[^" ]+' rendered-${{ matrix.environment }}.yaml | sed -E 's/^\s+image: *"?//' | sort -u)
+          [ -n "$refs" ] || { echo "::error::no image references found"; exit 1; }
+          for ref in $refs; do
+            skopeo inspect --no-tags "docker://$ref" >/dev/null
+            cosign verify --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
+              --certificate-identity-regexp "$COSIGN_IDENTITY_RE" "$ref" >/dev/null
+            echo "$ref: exists, signature OK"
+          done
+
   argocd-manifests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
 
       - name: Install kubeconform
         run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
-            | tar xz kubeconform
-      - name: Validate Application/AppProject manifests
-        # CRD schemas come from the community CRDs catalog
+          set -euo pipefail
+          curl -sSfL -o kubeconform.tgz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  kubeconform.tgz" | sha256sum -c -
+          tar -xzf kubeconform.tgz kubeconform
+
+      - name: Lint and render the cert-manager-issuer chart
+        run: |
+          helm lint charts/cert-manager-issuer --strict
+          helm template infra-cert-manager-issuer charts/cert-manager-issuer > rendered-issuer.yaml
+
+      - name: Validate ArgoCD and cert-manager manifests
+        # CRD schemas from the community catalog; job name is ruleset-pinned
         run: >-
           ./kubeconform -strict -summary
           -kubernetes-version "$KUBERNETES_VERSION"
           -schema-location default
-          -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-          argocd/ bootstrap/root-application.yaml
+          -schema-location "$CRD_SCHEMAS"
+          argocd/ rendered-issuer.yaml
