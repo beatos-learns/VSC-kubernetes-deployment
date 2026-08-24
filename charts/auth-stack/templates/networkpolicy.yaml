@@ -4,8 +4,7 @@
   Namespace isolation (Aufgabe 5):
     1. deny all ingress by default
     2. allow traffic between pods of this namespace (frontend -> backend -> db)
-    3. allow the ingress controller namespace to reach the frontend and,
-       for the /api Ingress route, the backend
+    3. allow the ingress controller namespace to reach the frontend
   Kubelet probes originate from the node and are unaffected (Cilium host entity).
   Egress is intentionally left open.
 */}}
@@ -58,28 +57,5 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .frontendPort }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ $.Release.Name }}-allow-ingress-controller-backend
-  labels:
-    app.kubernetes.io/instance: {{ $.Release.Name }}
-    app.kubernetes.io/managed-by: {{ $.Release.Service }}
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: backend
-      app.kubernetes.io/instance: {{ $.Release.Name }}
-  policyTypes:
-    - Ingress
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .ingressControllerNamespace }}
-      ports:
-        - protocol: TCP
-          port: {{ .backendPort }}
 {{- end }}
 {{- end }}
