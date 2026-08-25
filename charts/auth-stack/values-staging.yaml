@@ -2,9 +2,10 @@
 # Staging environment (namespace: auth-staging) - only what differs from
 # values.yaml.
 #
-# The image tags below are the promotion target for the planned CI promote
-# job (VSC-kubernetes-containers build.yml); until it exists they are bumped
-# by pull request. Do not reformat these lines.
+# The image tags below are written by the CI promote job
+# (VSC-kubernetes-containers build.yml, branch promote/staging, auto-merged
+# on green validate). Do not reformat these lines: the job edits them in
+# place, anchored on the trailing comment.
 # ---------------------------------------------------------------------------
 
 generic-stack:

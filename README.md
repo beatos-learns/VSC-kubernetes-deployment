@@ -19,7 +19,7 @@ PDF is not part of the repository).
    └─ build images ─ scan ─ publish to GHCR
    └─ publish generic-stack chart (OCI)
    └─ sign images + chart (cosign, keyless)
-   └─ PROMOTE (planned) ── PR, auto-merge on ✓ ────► values-staging.yaml (tag bump)
+   └─ promote ──────────── PR, auto-merge on ✓ ────► values-staging.yaml (tag bump)
                            PR, human-merged ───────► values-prod.yaml   (prod gate)
                                                               │ validate: lint, render,
                                                               │ kubeconform, signatures
@@ -160,7 +160,7 @@ Doks/                       PowerShell module: create/connect/delete the
 |---|---|---|
 | Namespace | `auth-staging` | `auth-prod` |
 | Values | `values-staging.yaml` | `values-prod.yaml` |
-| Promotion | PR by CI, auto-merged on green validate (planned) | PR by CI, human-merged (planned) |
+| Promotion | PR by CI (`promote/staging`), auto-merged on green validate | PR by CI (`promote/prod`), human-merged |
 | Backend | HPA 1–2 @ 70 % CPU, PDB `maxUnavailable: 1` | HPA 2–5 @ 70 % CPU (scale-down 1 pod / 60 s after 5 min), PDB `maxUnavailable: 1`, `ddl-auto: validate` |
 | Frontend | 1 replica, PDB | 2 replicas, PDB `maxUnavailable: 1` |
 | Rollouts | RollingUpdate `maxUnavailable: 0` / `maxSurge: 1`, `minReadySeconds: 5`, hostname anti-affinity | same |
@@ -172,26 +172,41 @@ Doks/                       PowerShell module: create/connect/delete the
 | TLS secret | `auth-staging-tls` | `auth-prod-tls` (both Let's Encrypt staging) |
 | Isolation | default-deny in/out, explicit flows, PSA restricted | same |
 
-## Promotion contract (CI-repo side) — planned
+## Promotion contract (CI-repo side)
 
-The CI repo's `build.yml` does **not** yet contain the `promote` job; until
-it does, image tags in the overlays are bumped by hand via PR. The intended
-contract:
+The CI repo's `build.yml` ends with a `promote` job. It runs only on the CI
+default branch, after every image and the chart are published **and signed**:
 
-1. Secret `OPS_REPO_TOKEN`: fine-grained PAT, Contents + Pull requests
-   read/write, scoped to **this repo only**.
-2. After images + chart are published and signed: bump
-   `components.<name>.image.tag` in `charts/auth-stack/values-staging.yaml`
-   on branch `promote/staging`, open a PR, enable auto-merge — it merges
-   itself once the `validate` checks pass.
-3. Open/refresh a PR applying the same bump to `values-prod.yaml`
-   (`promote/prod`) — merged by a human.
+1. Checks this repo out with the CI repo's `OPS_REPO_TOKEN` secret — a
+   fine-grained PAT scoped to **this repo only**, Contents + Pull requests
+   read/write. That PAT is the only cross-repo credential; no cluster
+   credentials exist in GitHub.
+2. Sets `components.<name>.image.tag` in both overlays to what the CI tree
+   builds — only for the components the overlays manage (`db`, `backend`,
+   `frontend`; the anchored `# promoted …` lines are edited in place) — and,
+   when the CI repo published a new `generic-stack` version, pins it in
+   `Chart.yaml` and refreshes `Chart.lock`.
+3. Branch `promote/staging` (`values-staging.yaml` + chart pin): one commit
+   on top of `main`, force-pushed, PR opened or refreshed, auto-merge armed —
+   it merges itself once the `validate` checks are green; a red gate leaves
+   it open for inspection.
+4. Branch `promote/prod` (`values-prod.yaml` only): same, without auto-merge
+   — a human merges it after verifying the tags on staging.
+
+Identical content is never pushed twice, so a CI run that changed nothing
+causes no PR churn. The chart pin is shared by both environments (one
+wrapper chart), so a new chart *version* reaches prod with the staging PR —
+`validate` renders and checks both overlays against it first; image tags
+stay behind the prod gate.
 
 `main` is enforced by the `main-protection` ruleset: changes only via PR,
 and only with green `chart (staging)`, `chart (prod)`, and
 `argocd-manifests` checks — an invalid or unsigned configuration cannot reach
-the branch ArgoCD watches. ArgoCD detects the merge and converges the matching
-namespace. No cluster credentials ever exist in GitHub.
+the branch ArgoCD watches. The flow also relies on three repository settings
+(GitHub, not in git): *Allow auto-merge* and *Automatically delete head
+branches* enabled, and no required reviewers on the ruleset (otherwise the
+staging PR waits for a human, which is the prod flow). ArgoCD detects the
+merge and converges the matching namespace.
 
 ## Working locally
 
@@ -215,6 +230,6 @@ verification of every referenced artifact.
 | 1 Manifests | `helm template` output of `generic-stack` (Service, Deployment/StatefulSet, ConfigMap, PVC, Ingress per component; the Secret is created out-of-band by design — manifest in `bootstrap/README.md` step 2, the chart renders one from an inline `secret:` map); the stack was built chart-first, the rendered manifests are the `validate.yml` artifacts (90 days) |
 | 2 Helm chart | `generic-stack` in the CI repo (schema-validated, helpers, no hardcoding); consumed here as OCI dependency |
 | 3 ArgoCD | `bootstrap/`, `argocd/` — dedicated `argocd` ns, apps deploy to separate namespaces, dashboard via port-forward |
-| 4 Pipeline | CI repo `build.yml`: build/scan/sign/publish on push, immutable version tag + unique `tree-<git tree hash>` tag per source state, registry login via `GITHUB_TOKEN`, no imperative deploy, no cluster credentials; `validate.yml` here is deploy-free; promotion job planned |
+| 4 Pipeline | CI repo `build.yml`: build/scan/sign/publish on push, immutable version tag + unique `tree-<git tree hash>` tag per source state, registry login via `GITHUB_TOKEN`, no imperative deploy, no cluster credentials; `validate.yml` here is deploy-free; the CI `promote` job commits tag bumps here as PRs (staging auto-merged on green checks, prod human-merged) |
 | 5 Namespaces | `values-*.yaml` overlays, `templates/resourcequota.yaml`, `limitrange.yaml`, `networkpolicy.yaml`, PSA labels in `argocd/app-*.yaml` |
 | 6 Scaling | HPA/PDB/RollingUpdate/anti-affinity via `generic-stack`, thresholds in the overlays; liveness/readiness/startup probes on every component; Traefik round-robins the Ingress over ready endpoints only; TLS via cert-manager; metrics-server infra app |

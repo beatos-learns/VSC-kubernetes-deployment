@@ -2,9 +2,10 @@
 # Production environment (namespace: auth-prod) - only what differs from
 # values.yaml.
 #
-# The image tags below are promoted from staging via pull request (opened by
-# the planned CI promote job, merged by a human; until it exists, by hand).
-# Do not reformat these lines.
+# The image tags below are written by the CI promote job
+# (VSC-kubernetes-containers build.yml, branch promote/prod) and merged by a
+# human after verification on staging. Do not reformat these lines: the job
+# edits them in place, anchored on the trailing comment.
 # ---------------------------------------------------------------------------
 
 generic-stack:
