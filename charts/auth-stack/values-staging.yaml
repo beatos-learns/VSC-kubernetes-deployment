@@ -38,10 +38,10 @@ generic-stack:
       ingress:
         # nip.io host on the Traefik LB IP (bootstrap/README.md step 6)
         hosts:
-          - host: auth-staging.146-190-177-37.nip.io
+          - host: auth-staging.134-199-191-94.nip.io
         tls:
           - hosts:
-              - auth-staging.146-190-177-37.nip.io
+              - auth-staging.134-199-191-94.nip.io
             secretName: auth-staging-tls
 
 dbBackup:
