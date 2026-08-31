@@ -5,7 +5,7 @@
     Size          = 's-2vcpu-4gb'
     Count         = 2
     MinNodes      = 2
-    MaxNodes      = 5
+    MaxNodes      = 10
     Version       = 'latest'
     Tag           = 'doks-VSC-deploy'
     KubeconfigDir = '..\kubeconfig'
