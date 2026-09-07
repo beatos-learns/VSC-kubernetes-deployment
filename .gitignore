@@ -10,3 +10,4 @@
 # helm dependency artifacts (vendored on demand via `helm dependency build`)
 /charts/auth-stack/charts/
 *.tgz
+*.pdf
