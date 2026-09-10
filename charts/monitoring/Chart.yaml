@@ -10,4 +10,7 @@ version: 0.1.0
 dependencies:
   - name: kube-prometheus-stack
     version: "90.0.0"
-    repository: https://prometheus-community.github.io/helm-charts
+    # OCI, not the https chart repo: `helm dependency build` resolves it without
+    # a `helm repo add` - on the CI runner and in ArgoCD's repo-server, which
+    # would otherwise need the repository declared in its own settings.
+    repository: oci://ghcr.io/prometheus-community/charts
