@@ -1,0 +1,274 @@
+# ---------------------------------------------------------------------------
+# Monitoring stack configuration (Aufgabe 7). This file is the only place the
+# stack is configured: no `--set`, no changes saved in the Grafana UI.
+# Everything under `kube-prometheus-stack:` is passed to the dependency chart;
+# the `dashboards:` block drives this wrapper's own template, which turns
+# files/dashboards/*.json into sidecar-labelled ConfigMaps.
+#
+# Cluster context: DOKS - managed control plane (no kube-scheduler /
+# controller-manager / etcd endpoints), Cilium instead of kube-proxy,
+# 2 x s-2vcpu-4gb nodes, do-block-storage volumes.
+# ---------------------------------------------------------------------------
+
+# Grafana folder and sidecar label for the dashboards in files/dashboards/;
+# label/labelValue must match kube-prometheus-stack.grafana.sidecar.dashboards.
+dashboards:
+  folder: auth-stack
+  label: grafana_dashboard
+  labelValue: "1"
+
+kube-prometheus-stack:
+  # `monitoring-prometheus` instead of `monitoring-kube-prometheus-stack-...`:
+  # the operator's StatefulSet names would otherwise eat the 63-char budget.
+  cleanPrometheusOperatorObjectNames: true
+
+  crds:
+    enabled: true
+
+  # -------------------------------------------------------------------------
+  # Scrape targets
+  # -------------------------------------------------------------------------
+  # kubelet/cAdvisor is the source of the per-pod CPU and memory series;
+  # kube-state-metrics adds the object state around them (requests, limits,
+  # restarts, HPA, ResourceQuota), node-exporter the nodes themselves.
+  kubelet:
+    enabled: true
+  kubeApiServer:
+    enabled: true
+  coreDns:
+    enabled: true
+  kubeStateMetrics:
+    enabled: true
+  nodeExporter:
+    enabled: true
+
+  # Not reachable on DOKS: the control plane runs outside the cluster and
+  # Cilium replaces kube-proxy. Left enabled they produce permanently down
+  # targets and *Down alerts that nobody can act on.
+  kubeControllerManager:
+    enabled: false
+  kubeScheduler:
+    enabled: false
+  kubeEtcd:
+    enabled: false
+  kubeProxy:
+    enabled: false
+
+  defaultRules:
+    create: true
+    rules:
+      etcd: false
+      kubeControllerManager: false
+      kubeProxy: false
+      kubeSchedulerAlerting: false
+      kubeSchedulerRecording: false
+      windows: false
+
+  # -------------------------------------------------------------------------
+  # Operator
+  # -------------------------------------------------------------------------
+  prometheusOperator:
+    admissionWebhooks:
+      # cert-manager is already in the cluster (argocd/infra-cert-manager.yaml):
+      # it issues the webhook certificate and injects the CA, so the chart does
+      # not have to run a certgen Job from a third-party image.
+      certManager:
+        enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+  # -------------------------------------------------------------------------
+  # Prometheus
+  # -------------------------------------------------------------------------
+  prometheus:
+    prometheusSpec:
+      scrapeInterval: 30s
+      evaluationInterval: 30s
+      retention: 7d
+      retentionSize: 8GiB # of a 10Gi volume - WAL and compaction need headroom
+      externalLabels:
+        cluster: doks-vsc
+      # No public endpoint: the UI is port-forward only, and this is the URL
+      # the notifications link back to.
+      externalUrl: http://localhost:9090
+
+      # Nil selectors mean "only what this release rendered". The environments
+      # ship their own ServiceMonitor and PrometheusRule
+      # (charts/auth-stack/templates/), so discovery is opened up - but only to
+      # the namespaces this platform owns.
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+      probeSelectorNilUsesHelmValues: false
+      scrapeConfigSelectorNilUsesHelmValues: false
+      ruleSelectorNilUsesHelmValues: false
+      serviceMonitorNamespaceSelector: &monitoredNamespaces
+        matchExpressions:
+          - key: kubernetes.io/metadata.name
+            operator: In
+            values:
+              - monitoring
+              - auth-staging
+              - auth-prod
+      podMonitorNamespaceSelector: *monitoredNamespaces
+      ruleNamespaceSelector: *monitoredNamespaces
+
+      storageSpec:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: do-block-storage
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 10Gi
+
+      resources:
+        requests:
+          cpu: 200m
+          memory: 768Mi
+        limits:
+          cpu: "1"
+          memory: 1536Mi
+
+  # -------------------------------------------------------------------------
+  # Alertmanager
+  # -------------------------------------------------------------------------
+  # The notification channel is a webhook URL that never enters git: the Secret
+  # `alertmanager-webhook` is created out-of-band (bootstrap/README.md step 2),
+  # mounted under /etc/alertmanager/secrets/ and read through `url_file`.
+  # For a Slack channel, swap `webhook_configs` for `slack_configs` with
+  # `api_url_file` pointing at the same path.
+  alertmanager:
+    config:
+      global:
+        resolve_timeout: 5m
+      route:
+        group_by: [namespace, alertname]
+        group_wait: 30s
+        group_interval: 5m
+        repeat_interval: 12h
+        receiver: webhook
+        routes:
+          # The stack's own heartbeat - it fires permanently by design.
+          - receiver: "null"
+            matchers:
+              - alertname = "Watchdog"
+          # The application's alerts (charts/auth-stack PrometheusRule):
+          # grouped per environment and severity, repeated hourly while firing.
+          - receiver: webhook
+            matchers:
+              - service = "user-mgmt-service"
+            group_by: [namespace, alertname, severity]
+            group_wait: 30s
+            repeat_interval: 1h
+      receivers:
+        - name: "null"
+        - name: webhook
+          webhook_configs:
+            - url_file: /etc/alertmanager/secrets/alertmanager-webhook/webhook-url
+              send_resolved: true
+              max_alerts: 20
+      inhibit_rules:
+        - source_matchers:
+            - severity = critical
+          target_matchers:
+            - severity =~ warning|info
+          equal: [namespace, alertname]
+        - source_matchers:
+            - severity = warning
+          target_matchers:
+            - severity = info
+          equal: [namespace, alertname]
+        - source_matchers:
+            - alertname = InfoInhibitor
+          target_matchers:
+            - severity = info
+          equal: [namespace]
+        - target_matchers:
+            - alertname = InfoInhibitor
+
+    alertmanagerSpec:
+      # Mounted at /etc/alertmanager/secrets/alertmanager-webhook/; without the
+      # Secret the pod does not start - the channel is not optional.
+      secrets:
+        - alertmanager-webhook
+      externalUrl: http://localhost:9093
+      storage:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: do-block-storage
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 1Gi
+      resources:
+        requests:
+          cpu: 10m
+          memory: 48Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
+
+  # -------------------------------------------------------------------------
+  # Grafana
+  # -------------------------------------------------------------------------
+  grafana:
+    enabled: true
+    # Admin credentials are created out-of-band, like every other secret
+    # (bootstrap/README.md step 2).
+    admin:
+      existingSecret: grafana-admin
+      userKey: admin-user
+      passwordKey: admin-password
+    # No PVC on purpose: datasource, folders and dashboards are provisioned
+    # from git, so a rescheduled Grafana comes back identical.
+    persistence:
+      enabled: false
+    defaultDashboardsEnabled: true
+    defaultDashboardsTimezone: Europe/Zurich
+    sidecar:
+      dashboards:
+        enabled: true
+        folderAnnotation: grafana_folder
+        provider:
+          foldersFromFilesStructure: true
+    grafana.ini:
+      analytics:
+        reporting_enabled: false
+        check_for_updates: false
+      # Reached through `kubectl port-forward` only (no public endpoint).
+      server:
+        root_url: http://localhost:3000/
+    testFramework:
+      enabled: false
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 300m
+        memory: 384Mi
+
+  kube-state-metrics:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 192Mi
+
+  prometheus-node-exporter:
+    resources:
+      requests:
+        cpu: 20m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi

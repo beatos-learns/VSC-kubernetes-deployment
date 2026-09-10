@@ -53,3 +53,7 @@ spec:
       kind: Middleware
     - group: monitoring.coreos.com
       kind: PodMonitor
+    - group: monitoring.coreos.com
+      kind: ServiceMonitor
+    - group: monitoring.coreos.com
+      kind: PrometheusRule

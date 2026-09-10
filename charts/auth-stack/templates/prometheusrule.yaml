@@ -1,0 +1,90 @@
+{{- with .Values.monitoring }}
+{{- if and .enabled .alerts.enabled }}
+{{/*
+  What counts as broken for this service (Aufgabe 7). The thresholds are
+  environment policy and come from the overlays; the `service` label is what
+  the Alertmanager route in charts/monitoring/values.yaml matches on, so every
+  alert below reaches the configured notification channel.
+  Metrics: Micrometer/Actuator `http_server_requests_seconds` on the admin port.
+*/}}
+{{- $ns := $.Release.Namespace }}
+{{- $job := include "auth-stack.componentName" (dict "root" $ "name" "backend") }}
+{{- $sel := printf "namespace=\"%s\", job=\"%s\"" $ns $job }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "auth-stack.componentName" (dict "root" $ "name" "backend") }}
+  labels:
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+spec:
+  groups:
+    - name: user-mgmt-service
+      interval: 30s
+      rules:
+        - alert: UserMgmtServiceHighErrorRate
+          expr: >-
+            100 * sum(rate(http_server_requests_seconds_count{ {{ $sel }}, status=~"5.." }[5m]))
+            / sum(rate(http_server_requests_seconds_count{ {{ $sel }} }[5m]))
+            > {{ .alerts.errorRatePercent }}
+          for: 10m
+          labels:
+            severity: critical
+            service: user-mgmt-service
+            namespace: {{ $ns }}
+          annotations:
+            summary: user-mgmt-service is answering requests with server errors ({{ $ns }})
+            description: >-
+              {{ `{{ $value | printf "%.1f" }}` }} % of the responses in {{ $ns }}
+              carry a 5xx status (threshold {{ .alerts.errorRatePercent }} %,
+              measured over 5 minutes). Registration and login are failing for
+              users; check the backend logs and the database connection.
+        - alert: UserMgmtServiceSlowResponses
+          expr: >-
+            histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{ {{ $sel }} }[5m])))
+            > {{ .alerts.latencySeconds }}
+          for: 10m
+          labels:
+            severity: warning
+            service: user-mgmt-service
+            namespace: {{ $ns }}
+          annotations:
+            summary: user-mgmt-service is slow ({{ $ns }})
+            description: >-
+              The 95th percentile of the request duration is
+              {{ `{{ $value | printf "%.2f" }}` }} s in {{ $ns }} (threshold
+              {{ .alerts.latencySeconds }} s). If CPU sits at the HPA target the
+              autoscaler is already at work - check its bounds in the overlay.
+        - alert: UserMgmtServiceLoginFailures
+          expr: >-
+            sum(rate(http_server_requests_seconds_count{ {{ $sel }}, uri="{{ .alerts.loginUri }}", status=~"4.." }[5m]))
+            > {{ .alerts.loginFailuresPerSecond }}
+          for: 10m
+          labels:
+            severity: warning
+            service: user-mgmt-service
+            namespace: {{ $ns }}
+          annotations:
+            summary: user-mgmt-service is rejecting logins ({{ $ns }})
+            description: >-
+              {{ `{{ $value | printf "%.2f" }}` }} rejected logins per second on
+              {{ .alerts.loginUri }} in {{ $ns }} (threshold
+              {{ .alerts.loginFailuresPerSecond }}/s over 5 minutes) - either
+              credential stuffing, or the JWT/database configuration stopped
+              accepting valid credentials.
+        - alert: UserMgmtServiceDown
+          expr: >-
+            sum(up{ {{ $sel }} }) == 0
+            or absent(up{ {{ $sel }} })
+          for: 5m
+          labels:
+            severity: critical
+            service: user-mgmt-service
+            namespace: {{ $ns }}
+          annotations:
+            summary: user-mgmt-service has no reachable instance ({{ $ns }})
+            description: >-
+              No backend pod in {{ $ns }} answered the metrics scrape for 5
+              minutes: the API is down, or the deployment was scaled to zero
+              (restore procedure, bootstrap/README.md step 8).
+{{- end }}
+{{- end }}

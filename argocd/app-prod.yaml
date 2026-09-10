@@ -29,6 +29,9 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # ServiceMonitor + PrometheusRule: the operator CRDs may arrive with
+      # infra-monitoring in the same wave (argocd/infra-monitoring.yaml)
+      - SkipDryRunOnMissingResource=true
     managedNamespaceMetadata:
       labels:
         pod-security.kubernetes.io/enforce: restricted

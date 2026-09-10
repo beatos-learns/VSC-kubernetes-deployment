@@ -28,6 +28,9 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
+      # ServiceMonitor + PrometheusRule: the operator CRDs may arrive with
+      # infra-monitoring in the same wave (argocd/infra-monitoring.yaml)
+      - SkipDryRunOnMissingResource=true
     # Pod Security Admission: the namespace itself enforces the restricted
     # profile (the chart's pods comply; anything else is rejected)
     managedNamespaceMetadata:

@@ -1,6 +1,7 @@
 # AppProject for the platform apps (Traefik, cert-manager, ClusterIssuer,
-# metrics-server, ArgoCD itself): explicit chart repositories and namespaces
-# (kube-system only for metrics-server's auth-reader RoleBinding), and only
+# metrics-server, kube-prometheus-stack, ArgoCD itself): explicit chart
+# repositories and namespaces (kube-system for metrics-server's auth-reader
+# RoleBinding and the monitoring stack's kubelet/CoreDNS Services), and only
 # the cluster-scoped kinds those charts actually create.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
@@ -10,7 +11,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-3"
 spec:
-  description: Cluster platform (ingress controller, certificates, metrics, ArgoCD)
+  description: Cluster platform (ingress controller, certificates, metrics, monitoring, ArgoCD)
   sourceRepos:
     - https://github.com/beatos-learns/VSC-kubernetes-deployment.git
     - https://traefik.github.io/charts
@@ -24,6 +25,8 @@ spec:
       namespace: cert-manager
     - server: https://kubernetes.default.svc
       namespace: metrics-server
+    - server: https://kubernetes.default.svc
+      namespace: monitoring
     - server: https://kubernetes.default.svc
       namespace: argocd
     - server: https://kubernetes.default.svc

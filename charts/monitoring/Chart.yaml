@@ -1,0 +1,16 @@
+apiVersion: v2
+name: monitoring
+description: >-
+  Environment wrapper around kube-prometheus-stack. Pins the chart version,
+  carries the cluster's own values.yaml (what is scraped, how long it is kept,
+  where alerts are routed) and adds the Grafana dashboards that visualise the
+  auth stack.
+type: application
+version: 0.1.0
+dependencies:
+  - name: kube-prometheus-stack
+    version: "90.0.0"
+    # OCI, not the https chart repo: `helm dependency build` resolves it without
+    # a `helm repo add` - on the CI runner and in ArgoCD's repo-server, which
+    # would otherwise need the repository declared in its own settings.
+    repository: oci://ghcr.io/prometheus-community/charts
