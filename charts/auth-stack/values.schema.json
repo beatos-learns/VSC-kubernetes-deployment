@@ -48,6 +48,28 @@
         }
       }
     },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "interval", "scrapeTimeout", "alerts"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "$ref": "#/definitions/duration" },
+        "scrapeTimeout": { "$ref": "#/definitions/duration" },
+        "alerts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "errorRatePercent", "latencySeconds", "loginUri", "loginFailuresPerSecond"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "errorRatePercent": { "type": "number", "minimum": 0, "maximum": 100 },
+            "latencySeconds": { "type": "number", "exclusiveMinimum": 0 },
+            "loginUri": { "type": "string", "pattern": "^/" },
+            "loginFailuresPerSecond": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
     "namespacePolicy": {
       "type": "object",
       "additionalProperties": false,
@@ -123,6 +145,7 @@
   },
   "definitions": {
     "quantity": { "type": ["string", "integer"], "pattern": "^[0-9]+(\\.[0-9]+)?(m|k|Ki|M|Mi|G|Gi|T|Ti)?$" },
+    "duration": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h)$" },
     "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
     "cpuMemory": {
       "type": "object",

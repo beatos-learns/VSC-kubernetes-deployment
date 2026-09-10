@@ -43,15 +43,17 @@ so several clusters can be driven side by side.
 
 `Bootstrap-DoksCluster` (alias of `Initialize-DoksCluster`) shadows the
 manual procedure in `bootstrap/README.md`: environment namespaces +
-secrets (random `db-password`/`jwt-secret`, optional GHCR pull secret),
-ArgoCD (pinned chart version) from `bootstrap/argocd-values.yaml`, then the root
-application `argocd/root.yaml` -
+secrets (random `db-password`/`jwt-secret`, optional GHCR pull secret), the
+`monitoring` namespace with Grafana's admin password and the Alertmanager
+notification channel, ArgoCD (pinned chart version) from
+`bootstrap/argocd-values.yaml`, then the root application `argocd/root.yaml` -
 after which ArgoCD pulls everything from git.
 
 ```powershell
 New-DoksCluster | Bootstrap-DoksCluster            # fresh cluster, one line
 Bootstrap-DoksCluster k8s-test-fra1 `
-    -GhcrUsername beatos-learns                    # prompts for the read:packages PAT
+    -GhcrUsername beatos-learns `                  # prompts for the read:packages PAT
+    -AlertWebhookUrl https://webhook.site/<id>     # where Alertmanager notifies
 Get-Help Bootstrap-DoksCluster -Full               # all parameters, examples, caveats
 ```
 

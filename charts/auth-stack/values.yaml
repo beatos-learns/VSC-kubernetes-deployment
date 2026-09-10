@@ -165,6 +165,11 @@ generic-stack:
       # alters it implicitly (same in staging, so drift fails there first).
       env:
         SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      # Publish the admin port (probes + /metrics) on the Service so the
+      # ServiceMonitor has an endpoint to scrape (templates/servicemonitor.yaml).
+      # Still not public: only the monitoring namespace may reach it.
+      service:
+        exposeAdmin: true
       minReadySeconds: 5
       resources:
         requests:
@@ -224,6 +229,28 @@ dbBackup:
       memory: 256Mi
   restore:
     file: ""
+
+# ---------------------------------------------------------------------------
+# Observability (Aufgabe 7): the ServiceMonitor points the cluster Prometheus
+# (ns monitoring, charts/monitoring) at the backend's admin port, the
+# PrometheusRule states what counts as broken. Both are deployment policy, so
+# the thresholds live here and in the overlays - not in the application chart.
+# ---------------------------------------------------------------------------
+monitoring:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+
+  alerts:
+    enabled: true
+    # Share of 5xx responses that means "the API is failing its users".
+    errorRatePercent: 5
+    # p95 of the server-side request duration.
+    latencySeconds: 1
+    # Rejected logins per second: credential stuffing, or a JWT/database
+    # configuration that stopped accepting valid credentials.
+    loginUri: /users/login
+    loginFailuresPerSecond: 0.5
 
 # ---------------------------------------------------------------------------
 # Namespace policy (rendered by templates/)

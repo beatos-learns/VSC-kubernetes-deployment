@@ -1011,6 +1011,9 @@ function Initialize-DoksCluster {
           2. Secrets   - per environment namespace: create the namespace, an
                          'auth-stack-secrets' Secret (random db-password + jwt-secret),
                          and optionally a GHCR image pull Secret (-GhcrUsername/-GhcrToken).
+                         Then the monitoring namespace with Grafana's admin Secret
+                         (random password) and the Alertmanager notification channel
+                         (-AlertWebhookUrl).
           3. ArgoCD    - 'helm upgrade --install' (pinned chart version) from bootstrap/argocd-values.yaml
                          into the 'argocd' namespace.
           4. Root app  - 'kubectl apply' argocd/root.yaml; ArgoCD
@@ -1047,6 +1050,18 @@ function Initialize-DoksCluster {
     .PARAMETER PullSecretName
         Name of the docker-registry pull Secret. Default: ghcr-pull
         (to be referenced via generic-stack.global.imagePullSecrets in charts/auth-stack/values.yaml).
+
+    .PARAMETER MonitoringNamespace
+        Namespace of the monitoring stack (argocd/infra-monitoring.yaml deploys
+        into it). Default: monitoring.
+
+    .PARAMETER AlertWebhookUrl
+        Notification channel for Alertmanager: any endpoint that accepts its JSON
+        payload (chat bridge, automation platform, https://webhook.site/<id> for a
+        demonstration). Stored in the 'alertmanager-webhook' Secret and read
+        through 'url_file', so it never reaches git. Without it a non-resolving
+        placeholder is created: Alertmanager starts and alerts fire visibly, but
+        nothing is delivered until the Secret is replaced.
 
     .PARAMETER RepoRoot
         Repository root containing bootstrap/argocd-values.yaml and
@@ -1089,6 +1104,8 @@ function Initialize-DoksCluster {
         [string]$GhcrUsername,
         [securestring]$GhcrToken,
         [string]$PullSecretName = 'ghcr-pull',
+        [string]$MonitoringNamespace = 'monitoring',
+        [string]$AlertWebhookUrl,
         [string]$RepoRoot,
         [string]$ArgoCdChartVersion
     )
@@ -1182,6 +1199,58 @@ data:
         Write-Host 'No GHCR pull secret requested - assuming the GHCR packages are public.' -ForegroundColor DarkGray
     }
 
+    # --- 2b. Monitoring secrets (Grafana admin, alert channel) ------------
+    if (Test-DoksKubectlResource -Kind namespace -Name $MonitoringNamespace) {
+        Write-Host "Namespace $MonitoringNamespace exists."
+    }
+    else {
+        Invoke-Kubectl -Arguments @('create', 'namespace', $MonitoringNamespace) | Out-Null
+        Write-Host "Namespace $MonitoringNamespace created." -ForegroundColor Green
+    }
+
+    if (Test-DoksKubectlResource -Kind secret -Name 'grafana-admin' -Namespace $MonitoringNamespace) {
+        Write-Host '  Secret grafana-admin exists - left untouched.'
+    }
+    else {
+        $manifest = @"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin
+  namespace: $MonitoringNamespace
+type: Opaque
+stringData:
+  admin-user: admin
+  admin-password: "$(New-DoksRandomSecret -Bytes 24)"
+"@
+        Invoke-KubectlManifest -Manifest $manifest -Arguments @('create', '-f', '-')
+        Write-Host '  Secret grafana-admin created (random password).' -ForegroundColor Green
+    }
+
+    if (Test-DoksKubectlResource -Kind secret -Name 'alertmanager-webhook' -Namespace $MonitoringNamespace) {
+        Write-Host '  Secret alertmanager-webhook exists - left untouched.'
+    }
+    else {
+        $webhookUrl = if ($AlertWebhookUrl) { $AlertWebhookUrl } else { 'https://alertmanager-webhook-not-configured.invalid/' }
+        $manifest = @"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-webhook
+  namespace: $MonitoringNamespace
+type: Opaque
+stringData:
+  webhook-url: "$webhookUrl"
+"@
+        Invoke-KubectlManifest -Manifest $manifest -Arguments @('create', '-f', '-')
+        if ($AlertWebhookUrl) {
+            Write-Host '  Secret alertmanager-webhook created (notification channel configured).' -ForegroundColor Green
+        }
+        else {
+            Write-Warning 'No -AlertWebhookUrl given: alertmanager-webhook holds a placeholder that never delivers. Replace the Secret (bootstrap/README.md step 2) to receive notifications.'
+        }
+    }
+
     # --- 3. ArgoCD (dedicated namespace) ----------------------------------
     $selfManaged = $false
     try { $selfManaged = Test-DoksKubectlResource -Kind application -Name argocd -Namespace argocd } catch { }
@@ -1211,6 +1280,9 @@ data:
     Write-Host '  Dashboard:           kubectl -n argocd port-forward svc/argocd-server 8080:80   ->  http://localhost:8080 (user: admin)'
     Write-Host '  Rotate admin pw:     argocd login localhost:8080 --plaintext; argocd account update-password; kubectl -n argocd delete secret argocd-initial-admin-secret'
     Write-Host '  Load balancer IP:    kubectl -n traefik get svc infra-traefik -o jsonpath="{.status.loadBalancer.ingress[0].ip}"  (point DNS / nip.io hosts at it)'
+    Write-Host '  Grafana password:    kubectl -n monitoring get secret grafana-admin -o jsonpath="{.data.admin-password}" | %{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) }'
+    Write-Host '  Grafana:             kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80   ->  http://localhost:3000 (user: admin)'
+    Write-Host '  Prometheus:          kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090'
 }
 
 function Test-DoksSetup {

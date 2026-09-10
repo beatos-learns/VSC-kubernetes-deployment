@@ -127,11 +127,23 @@ jobs:
           helm lint charts/cert-manager-issuer --strict
           helm template infra-cert-manager-issuer charts/cert-manager-issuer > rendered-issuer.yaml
 
-      - name: Validate ArgoCD and cert-manager manifests
-        # CRD schemas from the community catalog; job name is ruleset-pinned
+      - name: Lint and render the monitoring chart
+        # --include-crds: the operator CRDs are what ArgoCD applies too
+        run: |
+          helm dependency build charts/monitoring
+          helm lint charts/monitoring --strict
+          helm template monitoring charts/monitoring --namespace monitoring \
+            --include-crds > rendered-monitoring.yaml
+
+      - name: Validate ArgoCD, cert-manager and monitoring manifests
+        # CRD schemas from the community catalog; job name is ruleset-pinned.
+        # -skip CustomResourceDefinition: the upstream store carries no schema
+        # for the kind itself, and the operator CRDs ship verbatim with the
+        # pinned chart - what this repo configures is validated above.
         run: >-
           ./kubeconform -strict -summary
           -kubernetes-version "$KUBERNETES_VERSION"
           -schema-location default
           -schema-location "$CRD_SCHEMAS"
-          argocd/ rendered-issuer.yaml
+          -skip CustomResourceDefinition
+          argocd/ rendered-issuer.yaml rendered-monitoring.yaml

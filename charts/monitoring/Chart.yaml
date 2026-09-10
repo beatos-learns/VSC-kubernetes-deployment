@@ -1,0 +1,13 @@
+apiVersion: v2
+name: monitoring
+description: >-
+  Environment wrapper around kube-prometheus-stack. Pins the chart version,
+  carries the cluster's own values.yaml (what is scraped, how long it is kept,
+  where alerts are routed) and adds the Grafana dashboards that visualise the
+  auth stack.
+type: application
+version: 0.1.0
+dependencies:
+  - name: kube-prometheus-stack
+    version: "90.0.0"
+    repository: https://prometheus-community.github.io/helm-charts

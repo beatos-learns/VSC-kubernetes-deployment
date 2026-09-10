@@ -42,6 +42,46 @@ EOF
 done
 ```
 
+The monitoring stack expects two more Secrets in its own namespace: Grafana's
+admin credentials and the Alertmanager notification channel. Alertmanager
+reads the webhook URL from the mounted file (`url_file`), so the channel never
+appears in git or in a Helm value:
+
+```sh
+kubectl create namespace monitoring 2>/dev/null || true
+
+kubectl -n monitoring get secret grafana-admin >/dev/null 2>&1 || kubectl create -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-admin
+  namespace: monitoring
+type: Opaque
+stringData:
+  admin-user: admin
+  admin-password: "$(openssl rand -base64 24)"
+EOF
+
+kubectl -n monitoring get secret alertmanager-webhook >/dev/null 2>&1 || kubectl create -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-webhook
+  namespace: monitoring
+type: Opaque
+stringData:
+  webhook-url: "https://<incoming-webhook-url>"
+EOF
+```
+
+Any endpoint that accepts Alertmanager's JSON payload is a valid channel: a
+chat bridge, an automation platform, or a `https://webhook.site/<id>` inbox
+for a demonstration. Alertmanager reads the file per notification, so
+replacing the Secret is enough — the kubelet refreshes the mount within about
+a minute (`kubectl -n monitoring rollout restart statefulset/alertmanager-monitoring-kube-prometheus`
+forces it). Without the Secret the Alertmanager pod does not start: the
+notification channel is part of the deployment, not an afterthought.
+
 The GHCR packages are public; no pull secret is needed. (For private packages:
 `kubectl -n <ns> create secret docker-registry ghcr-pull ...` with a
 `read:packages` fine-grained PAT, and set `global.imagePullSecrets` in
@@ -73,8 +113,8 @@ kubectl -n argocd get applications -w
 
 The root app syncs `argocd/`: the two AppProjects, Traefik, cert-manager and
 its ClusterIssuer, metrics-server (DOKS does not ship one; the HPA needs it),
-ArgoCD itself, and the two environment Applications (sync-waves −3 … 0).
-`kubectl top nodes` works once metrics-server is up.
+the monitoring stack, ArgoCD itself, and the two environment Applications
+(sync-waves −3 … 0). `kubectl top nodes` works once metrics-server is up.
 
 ## 5. Dashboard access and admin password
 
@@ -159,6 +199,52 @@ the first HPA-managed sync does not scale to 1 in between:
 `kubectl -n <ns> apply edit-last-applied deployment/auth-backend` (delete
 `spec.replicas`).
 
+## 10. Monitoring
+
+`infra-monitoring` installs kube-prometheus-stack from `charts/monitoring`
+into the `monitoring` namespace; `charts/monitoring/values.yaml` is its entire
+configuration. Like ArgoCD, the three UIs are port-forward only:
+
+```sh
+kubectl -n monitoring get pods
+kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090
+kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-alertmanager 9093:9093
+```
+
+Grafana takes the credentials from the `grafana-admin` Secret (step 2); the
+two dashboards of this repo live in the **auth-stack** folder, next to the
+bundled kube-prometheus set. That the application is really scraped is visible
+in Prometheus → Status → Target health (`serviceMonitor/auth-staging/…` and
+`…/auth-prod/…` must be *up*) and here:
+
+```sh
+kubectl -n auth-prod get servicemonitor,prometheusrule
+kubectl -n monitoring logs sts/prometheus-monitoring-kube-prometheus -c prometheus | tail
+```
+
+Two ways to prove the alert path end to end:
+
+```sh
+# 1. routing + channel only: hand Alertmanager a synthetic alert
+curl -sS -XPOST http://localhost:9093/api/v2/alerts -H 'Content-Type: application/json' -d '[{
+  "labels": {"alertname":"UserMgmtServiceHighErrorRate","service":"user-mgmt-service",
+             "severity":"critical","namespace":"auth-staging"},
+  "annotations": {"summary":"notification channel test"}}]'
+
+# 2. the real rule: wrong-password logins above the staging threshold (1/s)
+#    for ten minutes make UserMgmtServiceLoginFailures fire
+while true; do
+  curl -sk -o /dev/null -X POST "https://auth-staging.<lb-ip>.nip.io/api/login" \
+    -H 'Content-Type: application/json' \
+    -d '{"email":"nobody@example.com","password":"wrong"}'
+done
+```
+
+The alert appears in Prometheus → Alerts (pending → firing), then in
+Alertmanager, and is delivered to the webhook from step 2. Thresholds are
+environment policy: `monitoring.alerts.*` in the overlays.
+
 ## Rotation
 
 | Secret | Procedure |
@@ -166,6 +252,8 @@ the first HPA-managed sync does not scale to 1 in between:
 | `jwt-secret` | update the key in `auth-stack-secrets`, then `kubectl -n <ns> rollout restart deployment/auth-backend` — all sessions are invalidated |
 | `db-password` | `ALTER ROLE app PASSWORD '<new>'` inside `auth-db-0`, update the key in the Secret, then `rollout restart deployment/auth-backend`; the Secret alone does **not** change the database password |
 | ArgoCD admin | `argocd account update-password` (step 5) |
+| `grafana-admin` | update the key, then `kubectl -n monitoring rollout restart deployment/monitoring-grafana` |
+| `alertmanager-webhook` | update the key; the file is re-read per notification (step 10) |
 
 `existingSecret` material is outside the chart's checksum: without the
 `rollout restart` the pods keep the old value.

@@ -1,0 +1,31 @@
+{{- with .Values.monitoring }}
+{{- if .enabled }}
+{{/*
+  Aufgabe 7: the cluster Prometheus (ns monitoring, argocd/infra-monitoring.yaml)
+  scrapes the backend's admin port - the same port the probes use, exposed on
+  the Service through `service.exposeAdmin`. The default-deny NetworkPolicy
+  already allows that port from the monitoring namespace
+  (namespacePolicy.networkPolicy.monitoring).
+*/}}
+{{- $gs := index $.Values "generic-stack" }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "auth-stack.componentName" (dict "root" $ "name" "backend") }}
+  labels:
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "auth-stack.componentSelector" (dict "root" $ "name" "backend") | nindent 6 }}
+  namespaceSelector:
+    matchNames:
+      - {{ $.Release.Namespace }}
+  endpoints:
+    - port: {{ $gs.componentDefaults.ports.admin.name }}
+      path: /metrics
+      scheme: http
+      interval: {{ .interval }}
+      scrapeTimeout: {{ .scrapeTimeout }}
+{{- end }}
+{{- end }}

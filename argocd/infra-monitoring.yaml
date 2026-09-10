@@ -1,0 +1,48 @@
+# Observability platform (Aufgabe 7): kube-prometheus-stack via the wrapper
+# chart charts/monitoring, whose values.yaml is the declarative configuration
+# of the whole stack. No finalizer: removing this Application must not delete
+# the metrics volume as a side effect.
+# Wave 0, like metrics-server: nothing needs it at deploy time, so a Prometheus
+# that cannot schedule must never gate the environments. The environments'
+# ServiceMonitor and PrometheusRule may therefore reach the cluster before the
+# operator CRDs do - their Applications carry SkipDryRunOnMissingResource and
+# retry until this one has installed them.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-monitoring
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+spec:
+  project: infra
+  source:
+    repoURL: https://github.com/beatos-learns/VSC-kubernetes-deployment.git
+    targetRevision: main
+    path: charts/monitoring
+    helm:
+      # short release name => monitoring-prometheus, monitoring-grafana, ...
+      releaseName: monitoring
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true # CRDs exceed the client-side annotation size limit
+    managedNamespaceMetadata:
+      labels:
+        # node-exporter needs hostPath, hostNetwork and hostPID - `restricted`
+        # would reject the DaemonSet that reads the nodes in the first place.
+        pod-security.kubernetes.io/enforce: privileged
+        pod-security.kubernetes.io/audit: baseline
+        pod-security.kubernetes.io/warn: baseline
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

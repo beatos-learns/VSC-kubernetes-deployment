@@ -29,6 +29,7 @@ PDF is not part of the repository).
                                                        ├─ ns traefik         ingress controller (1 DO LB, TLS)
                                                        ├─ ns cert-manager    ACME certificates for the hosts
                                                        ├─ ns metrics-server  metrics API for the HPA
+                                                       ├─ ns monitoring      Prometheus, Grafana, Alertmanager
                                                        ├─ ns auth-staging    release "auth"
                                                        └─ ns auth-prod       release "auth"
 ```
@@ -57,11 +58,19 @@ argocd/                     synced by the root app (sync-waves -3 … 0):
                             charts/cert-manager-issuer, wave-ordered after
                             the cert-manager CRDs
   infra-metrics-server.yaml metrics-server (Kubernetes SIG, Apache-2.0)
+  infra-monitoring.yaml     charts/monitoring (kube-prometheus-stack)
   argocd.yaml               ArgoCD reconciling its own installation
   app-staging.yaml          charts/auth-stack + values-staging.yaml → auth-staging
   app-prod.yaml             charts/auth-stack + values-prod.yaml   → auth-prod
 charts/cert-manager-issuer/ Let's Encrypt (staging) ClusterIssuer chart;
                             ACME endpoint, email and ingress class in values
+charts/monitoring/          wrapper chart:
+  Chart.yaml                pins kube-prometheus-stack (prometheus-community)
+  values.yaml               the monitoring stack's own configuration: scrape
+                            targets, retention + storage, Alertmanager routing
+                            and receiver, Grafana provisioning
+  files/dashboards/         the two dashboards of this repo (as code)
+  templates/dashboards.yaml renders them into sidecar-labelled ConfigMaps
 charts/auth-stack/          wrapper chart:
   Chart.yaml                pins generic-stack (OCI dependency from GHCR)
   values.yaml               DO-common: storageClass, rolling-update policy,
@@ -75,18 +84,20 @@ charts/auth-stack/          wrapper chart:
   templates/                namespace + edge policy: ResourceQuota, LimitRange,
                             NetworkPolicies (default-deny in/out + explicit
                             flows), Traefik security-headers Middleware,
-                            pg_dump CronJob + backup PVC
+                            pg_dump CronJob + backup PVC, ServiceMonitor +
+                            PrometheusRule for the backend
 Doks/                       PowerShell module: create/connect/delete the
                             throwaway DOKS cluster and run the bootstrap
                             (New-DoksCluster | Bootstrap-DoksCluster);
                             see Doks/README.md
 .github/workflows/
   validate.yml              PR/main gate: helm lint + template + kubeconform
-                            for both env overlays, the issuer chart and the
-                            ArgoCD manifests; every referenced image and the
-                            chart dependency must exist in GHCR and carry a
-                            cosign signature from the CI repo's workflow;
-                            uploads the rendered env manifests (debug aid)
+                            for both env overlays, the issuer chart, the
+                            monitoring chart and the ArgoCD manifests; every
+                            referenced image and the chart dependency must
+                            exist in GHCR and carry a cosign signature from
+                            the CI repo's workflow; uploads the rendered env
+                            manifests (debug aid)
 ```
 
 ## Design decisions
@@ -142,6 +153,21 @@ Doks/                       PowerShell module: create/connect/delete the
   Pod Security Admission `restricted` enforced on the namespace, and an
   AppProject that whitelists exactly the kinds the chart renders — no RBAC,
   no Secrets — so a values PR cannot escalate.
+* **Observability is one stack for everything** (Aufgabe 7).
+  `charts/monitoring` wraps kube-prometheus-stack the same way `auth-stack`
+  wraps `generic-stack`; its `values.yaml` is the whole configuration — scrape
+  targets, retention, Alertmanager routing, Grafana provisioning — and the two
+  dashboards are JSON files rendered into sidecar-labelled ConfigMaps, so
+  Grafana needs no PVC and a UI edit never becomes state. DOKS specifics are
+  part of it: the managed control plane and Cilium mean kube-scheduler,
+  controller-manager, etcd and kube-proxy are switched off instead of failing
+  forever. The environments carry their own `ServiceMonitor` and
+  `PrometheusRule` (thresholds per overlay), Prometheus discovers them only in
+  the namespaces this platform owns, and the alert route matches the
+  `service: user-mgmt-service` label, so the application's alerts reach the
+  configured webhook receiver. The webhook URL is a Secret read through
+  `url_file` — the notification channel follows the same "secrets never touch
+  git" rule as everything else.
 * **Backups are part of the deployment.** A `pg_dump` CronJob per environment
   (stack's own PostgreSQL image, same major version) writes to a dedicated
   PVC with retention; restore and volume-snapshot procedure in
@@ -171,6 +197,7 @@ Doks/                       PowerShell module: create/connect/delete the
 | Host | `auth-staging.<lb-ip>.nip.io` | `auth-prod.<lb-ip>.nip.io` |
 | TLS secret | `auth-staging-tls` | `auth-prod-tls` (both Let's Encrypt staging) |
 | Isolation | default-deny in/out, explicit flows, PSA restricted | same |
+| Alert thresholds | 5xx > 10 %, p95 > 2 s, rejected logins > 1/s | 5xx > 2 %, p95 > 0.8 s, rejected logins > 0.2/s |
 
 ## Promotion contract (CI-repo side)
 
@@ -217,6 +244,10 @@ helm lint charts/auth-stack -f charts/auth-stack/values.yaml \
 helm template auth charts/auth-stack --namespace auth-staging \
   -f charts/auth-stack/values.yaml -f charts/auth-stack/values-staging.yaml
 helm lint charts/cert-manager-issuer --strict
+
+helm dependency build charts/monitoring
+helm lint charts/monitoring --strict
+helm template monitoring charts/monitoring --namespace monitoring --include-crds
 ```
 
 Same steps run in CI (`validate.yml`) for both environments, plus
@@ -233,3 +264,4 @@ verification of every referenced artifact.
 | 4 Pipeline | CI repo `build.yml`: build/scan/sign/publish on push, immutable version tag + unique `tree-<git tree hash>` tag per source state, registry login via `GITHUB_TOKEN`, no imperative deploy, no cluster credentials; `validate.yml` here is deploy-free; the CI `promote` job commits tag bumps here as PRs (staging auto-merged on green checks, prod human-merged) |
 | 5 Namespaces | `values-*.yaml` overlays, `templates/resourcequota.yaml`, `limitrange.yaml`, `networkpolicy.yaml`, PSA labels in `argocd/app-*.yaml` |
 | 6 Scaling | HPA/PDB/RollingUpdate/anti-affinity via `generic-stack`, thresholds in the overlays; liveness/readiness/startup probes on every component; Traefik round-robins the Ingress over ready endpoints only; TLS via cert-manager; metrics-server infra app |
+| 7 Monitoring | kube-prometheus-stack in ns `monitoring` via `argocd/infra-monitoring.yaml` + `charts/monitoring` (its `values.yaml` is the whole configuration); per-pod CPU/memory from the kubelet + kube-state-metrics; `charts/auth-stack/templates/servicemonitor.yaml` scrapes the backend's admin port (request rate, response time, error rate); `prometheusrule.yaml` defines the alerts and the Alertmanager route in `charts/monitoring/values.yaml` forwards them to the webhook receiver; two dashboards in `charts/monitoring/files/dashboards/`; verification steps in `bootstrap/README.md` step 10 |

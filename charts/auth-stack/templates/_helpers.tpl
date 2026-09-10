@@ -10,3 +10,9 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/name: {{ .name }}
 app.kubernetes.io/instance: {{ .root.Release.Name }}
 {{- end -}}
+
+{{/* Name of one generic-stack component's workload/Service (<name>-<component>) */}}
+{{- define "auth-stack.componentName" -}}
+{{- $gs := index .root.Values "generic-stack" -}}
+{{- printf "%s-%s" (default .root.Release.Name $gs.nameOverride) .name | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
