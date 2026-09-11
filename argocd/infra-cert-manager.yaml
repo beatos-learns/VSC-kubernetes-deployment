@@ -5,7 +5,6 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: infra-cert-manager
-  namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "-2" # CRDs before the ClusterIssuer app
 spec:
@@ -53,18 +52,8 @@ spec:
               cpu: 100m
               memory: 64Mi
   destination:
-    server: https://kubernetes.default.svc
     namespace: cert-manager
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true # CRDs exceed the client-side annotation size limit
-    retry:
-      limit: 5
-      backoff:
-        duration: 30s
-        factor: 2
-        maxDuration: 5m

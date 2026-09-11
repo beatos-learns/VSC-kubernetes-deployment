@@ -18,6 +18,11 @@ env:
   HELM_VERSION: v3.21.4
   KUBECONFORM_VERSION: v0.8.0
   KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  # argocd/ is a kustomize directory; the runner image does not ship either tool
+  KUSTOMIZE_VERSION: v5.8.1
+  KUSTOMIZE_SHA256: 029a7f0f4e1932c52a0476cf02a0fd855c0bb85694b82c338fc648dcb53a819d
+  YQ_VERSION: v4.45.4
+  YQ_SHA256: b96de04645707e14a12f52c37e6266832e03c29e95b9b139cddcae7314466e69
   CRD_SCHEMAS: 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
   # every image/chart must carry a keyless signature from the CI repo's build workflow
   COSIGN_IDENTITY_RE: '^https://github.com/beatos-learns/VSC-kubernetes-containers/.github/workflows/build.yml@refs/heads/(master|main)$'
@@ -122,6 +127,16 @@ jobs:
           echo "${KUBECONFORM_SHA256}  kubeconform.tgz" | sha256sum -c -
           tar -xzf kubeconform.tgz kubeconform
 
+      - name: Install kustomize and yq
+        run: |
+          set -euo pipefail
+          curl -sSfL -o kustomize.tgz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
+          echo "${KUSTOMIZE_SHA256}  kustomize.tgz" | sha256sum -c -
+          tar -xzf kustomize.tgz kustomize
+          curl -sSfL -o yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  yq" | sha256sum -c -
+          chmod +x yq
+
       - name: Lint and render the cert-manager-issuer chart
         run: |
           helm lint charts/cert-manager-issuer --strict
@@ -135,15 +150,132 @@ jobs:
           helm template monitoring charts/monitoring --namespace monitoring \
             --include-crds > rendered-monitoring.yaml
 
+      - name: Every manifest in argocd/ is wired into the kustomization
+        # The root app renders argocd/ through kustomize, so a file that is
+        # neither in resources: nor a patch is silently not deployed and not
+        # validated - the directory source used to pick it up for free.
+        # Assumes flat filenames in resources: (no subdirectories, no remote bases).
+        run: |
+          set -euo pipefail
+          t="${RUNNER_TEMP:-$(mktemp -d)}"
+          ./yq -N '.resources[]' argocd/kustomization.yaml | sort -u > "$t/declared.txt"
+          ./yq -N '["kustomization.yaml"] + [.patches[]?.path] | .[]' argocd/kustomization.yaml | sort -u > "$t/skip.txt"
+          find argocd -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) -printf '%P\n' \
+            | { grep -vxF -f "$t/skip.txt" || true; } | sort -u > "$t/ondisk.txt"
+          if ! diff -u "$t/declared.txt" "$t/ondisk.txt"; then
+            echo '::error::argocd/kustomization.yaml resources do not match the files in argocd/ (- declared only, + on disk only)'
+            exit 1
+          fi
+
+      - name: argocd/ source hygiene
+        # The gates below read one document per resource file and address files
+        # by name, so anything that breaks those assumptions must fail loudly
+        # here rather than be skipped silently further down.
+        run: |
+          set -euo pipefail
+          rc=0
+          if ./yq -e '.metadata.annotations."argocd.argoproj.io/sync-wave"' argocd/root.yaml >/dev/null 2>&1; then
+            echo '::error::argocd/root.yaml must not carry a sync-wave annotation - it would pull root into sync-defaults.patch and flip its deliberate prune: false'
+            rc=1
+          fi
+          # a list in the patch REPLACES the target's list rather than merging,
+          # so one added syncOptions entry would wipe every app's own options
+          if ./yq -e '[.. | select(tag == "!!seq")] | length > 0' argocd/sync-defaults.patch >/dev/null 2>&1; then
+            echo '::error::argocd/sync-defaults.patch contains a list field - kustomize replaces lists on this CRD, which would wipe each Application own syncOptions'
+            rc=1
+          fi
+          while IFS= read -r f; do
+            case "$f" in
+              *[!A-Za-z0-9._-]*|"") echo "::error::resources entry '$f' is not a flat [A-Za-z0-9._-] filename; the argocd/ gates cannot address it"; rc=1; continue ;;
+            esac
+            if ! docs=$(./yq -N 'select(. != null) | di' "argocd/$f" 2>&1); then
+              echo "::error::cannot read argocd/$f (listed in kustomization.yaml resources)"
+              rc=1; continue
+            fi
+            n=$(printf '%s\n' "$docs" | grep -c . || true)
+            [ "$n" = "1" ] || { echo "::error::argocd/$f holds $n YAML documents; each entry in resources: must hold exactly one"; rc=1; }
+          done < <(./yq -N '.resources[]' argocd/kustomization.yaml)
+          exit $rc
+
+      - name: Render the ArgoCD manifests
+        # Its own step, never piped into kubeconform: GitHub's default shell is
+        # `bash -e` without pipefail and kubeconform exits 0 on an empty stream,
+        # so a failed build would go green.
+        run: ./kustomize build argocd/ > rendered-argocd.yaml
+
       - name: Validate ArgoCD, cert-manager and monitoring manifests
         # CRD schemas from the community catalog; job name is ruleset-pinned.
         # -skip CustomResourceDefinition: the upstream store carries no schema
         # for the kind itself, and the operator CRDs ship verbatim with the
         # pinned chart - what this repo configures is validated above.
+        # argocd/ AND rendered-argocd.yaml on purpose: the directory reports a
+        # schema error against the file it lives in, which the rendered blob
+        # cannot; the rendered file is what ArgoCD actually applies, and is the
+        # only one where sync-defaults.patch has been merged in.
         run: >-
           ./kubeconform -strict -summary
           -kubernetes-version "$KUBERNETES_VERSION"
           -schema-location default
           -schema-location "$CRD_SCHEMAS"
           -skip CustomResourceDefinition
-          argocd/ rendered-issuer.yaml rendered-monitoring.yaml
+          argocd/ rendered-argocd.yaml rendered-issuer.yaml rendered-monitoring.yaml
+
+      - name: sync-defaults.patch adds, never overrides
+        # A patch may fill in a field a manifest leaves unset - that is its job.
+        # It must never CHANGE a value the manifest states, because then the
+        # file and the cluster disagree with nothing to show for it. Derived
+        # from the manifests themselves, so it still holds when the patch grows.
+        # NOT paths(scalars): jq's select() drops a falsy value, so that form
+        # never yields a path whose leaf is `false` or null - i.e. it is blind
+        # to exactly `prune: false`, the case this gate exists for.
+        run: |
+          set -euo pipefail
+          t="${RUNNER_TEMP:-$(mktemp -d)}"
+          : > "$t/src.ndjson"
+          while IFS= read -r f; do
+            ./yq -o=json 'select(. != null)' "argocd/$f" >> "$t/src.ndjson"
+          done < <(./yq -N '.resources[]' argocd/kustomization.yaml)
+          jq -s '.' "$t/src.ndjson" > "$t/src.json"
+          ./yq -o=json 'select(. != null)' rendered-argocd.yaml | jq -s '.' > "$t/ren.json"
+          jq -n --slurpfile s "$t/src.json" --slurpfile r "$t/ren.json" -r '
+            ($s[0]) as $src | ($r[0]) as $ren
+            | [ $src[]
+                | . as $d
+                | ($ren[] | select(.kind == $d.kind and .metadata.name == $d.metadata.name)) as $out
+                | paths(type != "object" and type != "array") as $p
+                | select(($d | getpath($p)) != ($out | getpath($p)))
+                | "\($d.kind)/\($d.metadata.name): \($p | join(".")) is \($d | getpath($p) | tojson) in the file but \($out | getpath($p) | tojson) after the patch" ]
+            | if length == 0 then "no manifest value is overridden by sync-defaults.patch"
+              else (map("::error::" + .) | join("\n")) | halt_error(1) end'
+
+      - name: ArgoCD Application invariants
+        # Over the BUILT manifests: catches a patch that stopped matching, a
+        # dropped `namespace:` in kustomization.yaml, a project with no
+        # AppProject, and root losing its prune: false.
+        run: |
+          set -euo pipefail
+          declared=$(./yq -N '.resources | length' argocd/kustomization.yaml)
+          ./yq -o=json 'select(. != null)' rendered-argocd.yaml | jq -s -r --argjson declared "$declared" '
+            . as $docs
+            | [ $docs[] | select(.kind == "Application") ] as $apps
+            | ([ $docs[] | select(.kind == "AppProject") | .metadata.name ] + ["default"]) as $projects
+            | ([ $apps[] | .metadata.name ] | group_by(.) | map(select(length > 1) | "duplicate Application name: \(.[0])")) as $dupes
+            | ([ $docs[] | select(.kind != "Application" and .kind != "AppProject")
+                 | "unexpected kind \(.kind)/\(.metadata.name) - argocd/ holds Applications and AppProjects only, because the namespace: argocd transformer rewrites other kinds (it renames a Namespace outright)" ]) as $kinds
+            | ([ if ($docs | length) != $declared
+                 then "argocd/ declares \($declared) resources but renders \($docs | length) documents - a resource rendered nothing, or one file holds several"
+                 else empty end ]) as $counts
+            | ($apps | map(
+                .metadata.name as $n | .metadata as $m | .spec as $s |
+                [ (if $m.namespace != "argocd" then "\($n): metadata.namespace is \($m.namespace // "unset"), expected argocd" else empty end),
+                  (if ($s.destination.server // "") == "" then "\($n): no destination.server" else empty end),
+                  (if $s.syncPolicy.automated == null then "\($n): no syncPolicy.automated" else empty end),
+                  (if ($s.syncPolicy.retry.limit // 0) < 1 then "\($n): no syncPolicy.retry.limit" else empty end),
+                  (if ($projects | index($s.project)) == null then "\($n): project \($s.project) has no AppProject in argocd/" else empty end),
+                  (if $n == "root" and $s.syncPolicy.automated.prune != false then "root: automated.prune must stay false - the app-of-apps must never cascade-delete an environment" else empty end),
+                  (if $n != "root" and $m.annotations["argocd.argoproj.io/sync-wave"] == null then "\($n): no sync-wave annotation - sync-defaults.patch does not match it" else empty end),
+                  (if $s.syncPolicy.managedNamespaceMetadata != null and (($s.syncPolicy.syncOptions // []) | index("CreateNamespace=true")) == null then "\($n): managedNamespaceMetadata without CreateNamespace=true" else empty end)
+                ]) | flatten) as $violations
+            | ($kinds + $counts + $dupes + $violations)
+            | if length == 0 then "\($apps | length) Applications, \($projects | length - 1) AppProjects: all invariants hold"
+              else (map("::error::" + .) | join("\n")) | halt_error(1) end'

@@ -2,7 +2,6 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: auth-staging
-  namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "0"
   finalizers:
@@ -20,12 +19,8 @@ spec:
         - values.yaml
         - values-staging.yaml
   destination:
-    server: https://kubernetes.default.svc
     namespace: auth-staging
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
       - CreateNamespace=true
       # ServiceMonitor + PrometheusRule: the operator CRDs may arrive with
@@ -39,9 +34,3 @@ spec:
         pod-security.kubernetes.io/audit: restricted
         pod-security.kubernetes.io/warn: restricted
         environment: staging
-    retry:
-      limit: 5
-      backoff:
-        duration: 30s
-        factor: 2
-        maxDuration: 5m

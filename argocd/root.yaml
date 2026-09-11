@@ -4,7 +4,9 @@
 # a file from argocd/ (or deleting the root app) must never cascade into
 # deleting the platform or an environment - remove those Applications
 # explicitly. `default` project because the AppProjects it creates cannot
-# exist before it syncs.
+# exist before it syncs. Complete on purpose: no sync-wave annotation, so
+# sync-defaults.patch skips this file and `kubectl apply -f argocd/root.yaml`
+# still works on an empty cluster. Adding a wave here would flip prune to true.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

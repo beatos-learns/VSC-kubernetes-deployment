@@ -116,6 +116,12 @@ its ClusterIssuer, metrics-server (DOKS does not ship one; the HPA needs it),
 the monitoring stack, ArgoCD itself, and the two environment Applications
 (sync-waves −3 … 0). `kubectl top nodes` works once metrics-server is up.
 
+`argocd/` is a kustomize directory (`argocd/kustomization.yaml`), which is how
+the shared sync policy stays in one file. `root.yaml` is deliberately kept
+complete and outside that patch, so the single-file apply above still works on
+an empty cluster — do not replace it with `kubectl apply -k ../argocd`, which
+would apply the whole directory by hand instead of letting root adopt it.
+
 ## 5. Dashboard access and admin password
 
 ```sh

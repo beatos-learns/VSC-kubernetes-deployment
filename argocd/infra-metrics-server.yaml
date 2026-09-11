@@ -8,7 +8,6 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: infra-metrics-server
-  namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "0"
 spec:
@@ -27,17 +26,7 @@ spec:
             cpu: 200m
             memory: 128Mi
   destination:
-    server: https://kubernetes.default.svc
     namespace: metrics-server
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
       - CreateNamespace=true
-    retry:
-      limit: 5
-      backoff:
-        duration: 30s
-        factor: 2
-        maxDuration: 5m

@@ -1,0 +1,23 @@
+# The root app renders this directory (root.yaml -> spec.source.path: argocd).
+# Every file here must be listed below or it is neither deployed nor validated;
+# validate.yml fails the PR if the two drift apart.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+resources:
+  - project.yaml
+  - project-infra.yaml
+  - root.yaml
+  - argocd.yaml
+  - infra-traefik.yaml
+  - infra-cert-manager.yaml
+  - infra-cert-manager-issuer.yaml
+  - infra-metrics-server.yaml
+  - infra-monitoring.yaml
+  - app-staging.yaml
+  - app-prod.yaml
+patches:
+  - path: sync-defaults.patch
+    target:
+      kind: Application
+      annotationSelector: argocd.argoproj.io/sync-wave,!sync-defaults.vsc/opt-out

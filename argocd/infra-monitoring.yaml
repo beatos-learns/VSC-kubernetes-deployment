@@ -11,7 +11,6 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: infra-monitoring
-  namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "0"
 spec:
@@ -24,12 +23,8 @@ spec:
       # short release name => monitoring-prometheus, monitoring-grafana, ...
       releaseName: monitoring
   destination:
-    server: https://kubernetes.default.svc
     namespace: monitoring
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true # CRDs exceed the client-side annotation size limit
@@ -40,9 +35,3 @@ spec:
         pod-security.kubernetes.io/enforce: privileged
         pod-security.kubernetes.io/audit: baseline
         pod-security.kubernetes.io/warn: baseline
-    retry:
-      limit: 5
-      backoff:
-        duration: 30s
-        factor: 2
-        maxDuration: 5m

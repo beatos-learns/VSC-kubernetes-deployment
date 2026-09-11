@@ -5,7 +5,6 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: infra-cert-manager-issuer
-  namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "-1"
 spec:
@@ -15,17 +14,7 @@ spec:
     targetRevision: main
     path: charts/cert-manager-issuer
   destination:
-    server: https://kubernetes.default.svc
     namespace: cert-manager
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
       - SkipDryRunOnMissingResource=true
-    retry:
-      limit: 5
-      backoff:
-        duration: 30s
-        factor: 2
-        maxDuration: 5m
