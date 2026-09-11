@@ -7,6 +7,13 @@
 /kubeconfig/
 *-kubeconfig.yaml
 
+# what the validate workflow renders and downloads; also left behind when the
+# same checks are run locally to reproduce a red PR
+/rendered-*.yaml
+/kubeconform
+/kustomize
+/yq
+
 # helm dependency artifacts (vendored on demand via `helm dependency build`)
 /charts/auth-stack/charts/
 /charts/monitoring/charts/

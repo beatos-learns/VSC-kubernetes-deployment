@@ -2,7 +2,6 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: auth-prod
-  namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "0"
   finalizers:
@@ -19,14 +18,10 @@ spec:
         - values.yaml
         - values-prod.yaml
   destination:
-    server: https://kubernetes.default.svc
     namespace: auth-prod
   syncPolicy:
-    # Prod syncs automatically too - the human gate is the promotion PR
-    # into values-prod.yaml, not a manual sync button.
-    automated:
-      prune: true
-      selfHeal: true
+    # Prod syncs automatically too (sync-defaults.patch) - the human gate is
+    # the promotion PR into values-prod.yaml, not a manual sync button.
     syncOptions:
       - CreateNamespace=true
       # ServiceMonitor + PrometheusRule: the operator CRDs may arrive with
@@ -38,9 +33,3 @@ spec:
         pod-security.kubernetes.io/audit: restricted
         pod-security.kubernetes.io/warn: restricted
         environment: production
-    retry:
-      limit: 5
-      backoff:
-        duration: 30s
-        factor: 2
-        maxDuration: 5m

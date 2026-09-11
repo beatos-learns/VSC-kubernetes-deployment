@@ -6,7 +6,6 @@ apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
   name: infra-traefik
-  namespace: argocd
   annotations:
     argocd.argoproj.io/sync-wave: "-2"
 spec:
@@ -68,18 +67,8 @@ spec:
                   scheme: https
                   permanent: true
   destination:
-    server: https://kubernetes.default.svc
     namespace: traefik
   syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
     syncOptions:
       - CreateNamespace=true
       - ServerSideApply=true # CRDs exceed the client-side annotation size limit
-    retry:
-      limit: 5
-      backoff:
-        duration: 30s
-        factor: 2
-        maxDuration: 5m

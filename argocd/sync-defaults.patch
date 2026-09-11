@@ -1,0 +1,27 @@
+# Sync behaviour for every Application in this directory. These values OVERRIDE
+# whatever the Application file says - an app cannot raise its own retry budget
+# or set prune: false by declaring it, and validate.yml rejects a file that
+# tries. To diverge, annotate the Application `sync-defaults.vsc/opt-out: "true"`
+# and restate destination.server and the whole syncPolicy there; the patch then
+# skips it entirely. root.yaml is skipped because it carries no sync-wave.
+# A field added here silently wins over every Application that does not opt out,
+# so validate.yml rejects a patch that changes any value a manifest states, and
+# rejects a list outright - on this CRD kustomize replaces lists rather than
+# merging them, so one syncOptions entry here would wipe every app's own.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: patched-by-target-selector
+spec:
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

@@ -47,7 +47,13 @@ bootstrap/                  one-time cluster setup: ArgoCD install values,
                             secrets procedure (documented, never committed),
                             backup/restore and rotation runbooks
 argocd/                     synced by the root app (sync-waves -3 … 0):
-  root.yaml                 the app-of-apps itself (applied once at bootstrap)
+  kustomization.yaml        what the root app renders; every file below must
+                            be listed here or it is not deployed
+  sync-defaults.patch       destination.server + syncPolicy shared by every
+                            Application that carries a sync-wave
+  root.yaml                 the app-of-apps itself (applied once at bootstrap;
+                            no sync-wave, so the patch skips it and the file
+                            stays complete for `kubectl apply -f`)
   project-infra.yaml        AppProject for the platform: explicit chart repos,
                             namespaces and cluster-scoped kinds
   project.yaml              AppProject for the env apps: this repo only, two
@@ -93,11 +99,13 @@ Doks/                       PowerShell module: create/connect/delete the
 .github/workflows/
   validate.yml              PR/main gate: helm lint + template + kubeconform
                             for both env overlays, the issuer chart, the
-                            monitoring chart and the ArgoCD manifests; every
-                            referenced image and the chart dependency must
-                            exist in GHCR and carry a cosign signature from
-                            the CI repo's workflow; uploads the rendered env
-                            manifests (debug aid)
+                            monitoring chart and the ArgoCD manifests; builds
+                            argocd/ with kustomize and asserts the Application
+                            invariants on the result (see Design decisions);
+                            every referenced image and the chart dependency
+                            must exist in GHCR and carry a cosign signature
+                            from the CI repo's workflow; uploads the rendered
+                            env manifests (debug aid)
 ```
 
 ## Design decisions
@@ -129,6 +137,22 @@ Doks/                       PowerShell module: create/connect/delete the
   the `db-password` key. Rotation runbook in `bootstrap/README.md`. Upgrade
   path if full GitOps for secrets is wanted later: Sealed Secrets
   (Apache-2.0).
+* **`argocd/` is a kustomize overlay; the charts stay Helm.** Helm packages
+  *applications* — templated, versioned, pulled from OCI, schema-validated,
+  signed. `argocd/` is not an application: it is a set of literal objects
+  sharing one policy, so it uses kustomize instead of being templated.
+  `kustomization.yaml` is the deploy list — the root app's `path: argocd` has
+  no `directory:` filter, so under a plain directory source *any* file left in
+  that folder would ship; now nothing deploys until it is listed, and
+  `validate.yml` fails if the list and the folder disagree.
+  `sync-defaults.patch` holds `destination.server` and the shared `syncPolicy`
+  once instead of nine times. It OVERRIDES rather than backfills, so CI rejects
+  any manifest that redeclares a field it owns, and rejects a list inside it
+  (kustomize replaces lists on this CRD, which would wipe each app's own
+  `syncOptions`). An Application diverges deliberately by carrying
+  `sync-defaults.vsc/opt-out: "true"` and restating what it needs.
+  `root.yaml` is excluded — no sync-wave, so the patch skips it and it stays a
+  complete manifest that `kubectl apply -f` can bootstrap on an empty cluster.
 * **Prod auto-syncs too.** The production gate is the promotion *pull
   request*, not a manual sync button — review happens in git, where it is
   auditable. Prod runs the backend with `ddl-auto: validate`: the seed SQL
@@ -248,11 +272,20 @@ helm lint charts/cert-manager-issuer --strict
 helm dependency build charts/monitoring
 helm lint charts/monitoring --strict
 helm template monitoring charts/monitoring --namespace monitoring --include-crds
+
+kustomize build argocd/            # what the root app actually applies
 ```
 
 Same steps run in CI (`validate.yml`) for both environments, plus
 `kubeconform` against the cluster's Kubernetes version and cosign
 verification of every referenced artifact.
+
+`validate.yml` gates `argocd/` with plain `kustomize`/`yq`/`jq`, so a red run
+reproduces locally by copying the step body out of the workflow. Note that
+`kubeconform` runs against both `argocd/` and the kustomize output: the
+directory reports a schema error against the file it lives in, the rendered
+output is what ArgoCD applies and the only place `sync-defaults.patch` is
+visible merged.
 
 ## Task mapping (grading)
 
@@ -260,7 +293,7 @@ verification of every referenced artifact.
 |---|---|
 | 1 Manifests | `helm template` output of `generic-stack` (Service, Deployment/StatefulSet, ConfigMap, PVC, Ingress per component; the Secret is created out-of-band by design — manifest in `bootstrap/README.md` step 2, the chart renders one from an inline `secret:` map); the stack was built chart-first, the rendered manifests are the `validate.yml` artifacts (90 days) |
 | 2 Helm chart | `generic-stack` in the CI repo (schema-validated, helpers, no hardcoding); consumed here as OCI dependency |
-| 3 ArgoCD | `bootstrap/`, `argocd/` — dedicated `argocd` ns, apps deploy to separate namespaces, dashboard via port-forward |
+| 3 ArgoCD | `bootstrap/`, `argocd/` — dedicated `argocd` ns, apps deploy to separate namespaces, dashboard via port-forward; the app-of-apps renders `argocd/` as a kustomize overlay (`kustomization.yaml` is the deploy list, `sync-defaults.patch` the shared sync policy) and `validate.yml` asserts the Application invariants on the build output |
 | 4 Pipeline | CI repo `build.yml`: build/scan/sign/publish on push, immutable version tag + unique `tree-<git tree hash>` tag per source state, registry login via `GITHUB_TOKEN`, no imperative deploy, no cluster credentials; `validate.yml` here is deploy-free; the CI `promote` job commits tag bumps here as PRs (staging auto-merged on green checks, prod human-merged) |
 | 5 Namespaces | `values-*.yaml` overlays, `templates/resourcequota.yaml`, `limitrange.yaml`, `networkpolicy.yaml`, PSA labels in `argocd/app-*.yaml` |
 | 6 Scaling | HPA/PDB/RollingUpdate/anti-affinity via `generic-stack`, thresholds in the overlays; liveness/readiness/startup probes on every component; Traefik round-robins the Ingress over ready endpoints only; TLS via cert-manager; metrics-server infra app |
