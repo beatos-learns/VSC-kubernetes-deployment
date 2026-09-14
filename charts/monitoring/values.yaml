@@ -10,7 +10,8 @@
 # 2 x s-2vcpu-4gb nodes, do-block-storage volumes.
 # ---------------------------------------------------------------------------
 
-# Grafana folder and sidecar label for the dashboards in files/dashboards/;
+# Grafana folder and sidecar label for the dashboards in files/dashboards/
+# (the two auth-stack dashboards and the k6 load-test dashboard, Aufgabe 2);
 # label/labelValue must match kube-prometheus-stack.grafana.sidecar.dashboards.
 dashboards:
   folder: auth-stack
@@ -96,6 +97,11 @@ kube-prometheus-stack:
       # No public endpoint: the UI is port-forward only, and this is the URL
       # the notifications link back to.
       externalUrl: http://localhost:9090
+
+      # Accepts pushed samples on /api/v1/write: the k6 runner (loadtest/)
+      # streams its client-side metrics here during a load test (Aufgabe 2).
+      # The receiver only ingests; it does not add scrape targets.
+      enableRemoteWriteReceiver: true
 
       # Nil selectors mean "only what this release rendered". The environments
       # ship their own ServiceMonitor and PrometheusRule

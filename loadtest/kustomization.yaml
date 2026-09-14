@@ -1,0 +1,25 @@
+# Load test for the user-mgmt-service (Aufgabe 2, Chaos Testing). Applied by
+# hand per run - a load test is an experiment, not a deployment, so this
+# directory is deliberately NOT an ArgoCD Application:
+#   kubectl apply -k loadtest/              (namespace, policy, script, Job)
+#   kubectl -n loadtest logs -f job/k6-user-mgmt-service
+# The test user's credentials come from a Secret created out-of-band
+# (README.md) - like every other secret in this repo they never enter git.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: loadtest
+resources:
+  - namespace.yaml
+  - networkpolicy.yaml
+  - job.yaml
+configMapGenerator:
+  - name: k6-scripts
+    files:
+      - scripts/user-mgmt-service.js
+generatorOptions:
+  # stable name: the Job references it, and a re-apply must replace the
+  # script in place instead of leaving hashed copies behind
+  disableNameSuffixHash: true
+  labels:
+    app.kubernetes.io/name: k6
+    app.kubernetes.io/part-of: loadtest

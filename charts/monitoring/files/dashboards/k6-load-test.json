@@ -1,0 +1,239 @@
+{
+  "uid": "vsc-k6-load-test",
+  "title": "k6 load test",
+  "description": "One k6 run (loadtest/) against an environment: what the client measured, next to what the service and the HPA did. Filter by testid = the Job's pod name.",
+  "tags": ["auth-stack", "loadtest", "k6"],
+  "timezone": "browser",
+  "editable": false,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "hide": 0,
+        "refresh": 1
+      },
+      {
+        "name": "namespace",
+        "label": "environment",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": { "query": "label_values(kube_horizontalpodautoscaler_spec_max_replicas{namespace=~\"auth-.*\"}, namespace)", "refId": "StandardVariableQuery" },
+        "definition": "label_values(kube_horizontalpodautoscaler_spec_max_replicas{namespace=~\"auth-.*\"}, namespace)",
+        "current": { "selected": false, "text": "auth-staging", "value": "auth-staging" },
+        "refresh": 2,
+        "sort": 1,
+        "includeAll": false,
+        "multi": false
+      },
+      {
+        "name": "testid",
+        "label": "k6 run",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": { "query": "label_values(k6_vus, testid)", "refId": "StandardVariableQuery" },
+        "definition": "label_values(k6_vus, testid)",
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "refresh": 2,
+        "sort": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Virtual users",
+      "description": "Active k6 VUs (k6_vus). The ramp is the load profile in scripts/user-mgmt-service.js.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(k6_vus{testid=~\"$testid\"})", "legendFormat": "VUs", "range": true, "refId": "A" }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "k6 request rate",
+      "description": "Requests per second as sent by k6 (all endpoints of the scenario).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "decimals": 1, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(rate(k6_http_reqs_total{testid=~\"$testid\"}[1m]))", "legendFormat": "requests/s", "range": true, "refId": "A" }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "k6 p95 login",
+      "description": "Client-side p95 of POST /api/login (the threshold in the script is 2 s).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 2 }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(k6_http_req_duration_p95{testid=~\"$testid\", name=\"login\"})", "legendFormat": "p95", "range": true, "refId": "A" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "k6 failed requests",
+      "description": "Share of requests k6 counted as failed (transport errors, 4xx, 5xx). Threshold 5 %.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 5 }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "100 * max(k6_http_req_failed_rate{testid=~\"$testid\"})", "legendFormat": "failed", "range": true, "refId": "A" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Backend replicas",
+      "description": "HPA: current replicas / desired / max (kube-state-metrics).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "none", "justifyMode": "auto", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "value_and_name" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(kube_horizontalpodautoscaler_status_current_replicas{namespace=\"$namespace\", horizontalpodautoscaler=~\".*-backend\"})", "legendFormat": "current", "range": true, "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(kube_horizontalpodautoscaler_status_desired_replicas{namespace=\"$namespace\", horizontalpodautoscaler=~\".*-backend\"})", "legendFormat": "desired", "range": true, "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(kube_horizontalpodautoscaler_spec_max_replicas{namespace=\"$namespace\", horizontalpodautoscaler=~\".*-backend\"})", "legendFormat": "max", "range": true, "refId": "C" }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Server error rate",
+      "description": "5xx share of the backend's responses (its own Micrometer metrics) - the alert UserMgmtServiceHighErrorRate watches the same ratio.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 2 }, { "color": "red", "value": 10 }] } }, "overrides": [] },
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "100 * sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\", status=~\"5..\"}[2m])) / sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\"}[2m]))", "legendFormat": "5xx", "range": true, "refId": "A" }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Load: virtual users and request rate",
+      "description": "The ramp as k6 drove it. VUs on the right axis.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "VUs" }, "properties": [{ "id": "unit", "value": "none" }, { "id": "custom.axisPlacement", "value": "right" }, { "id": "custom.fillOpacity", "value": 0 }, { "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [6, 4] } }] }
+        ]
+      },
+      "options": { "legend": { "calcs": ["max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (name) (rate(k6_http_reqs_total{testid=~\"$testid\"}[1m]))", "legendFormat": "{{name}} requests/s", "range": true, "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(k6_vus{testid=~\"$testid\"})", "legendFormat": "VUs", "range": true, "refId": "B" }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "HPA: backend replicas",
+      "description": "Desired must rise during the plateau and fall back after the stabilisation window (5 min) once the load is gone.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "fieldConfig": {
+        "defaults": { "unit": "none", "decimals": 0, "min": 0, "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 10, "lineWidth": 2, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": "min|max" }, "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [4, 4] } }, { "id": "custom.fillOpacity", "value": 0 }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "text" } }] }
+        ]
+      },
+      "options": { "legend": { "calcs": ["min", "max", "lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(kube_horizontalpodautoscaler_status_current_replicas{namespace=\"$namespace\", horizontalpodautoscaler=~\".*-backend\"})", "legendFormat": "current", "range": true, "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(kube_horizontalpodautoscaler_status_desired_replicas{namespace=\"$namespace\", horizontalpodautoscaler=~\".*-backend\"})", "legendFormat": "desired", "range": true, "refId": "B" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum(kube_deployment_status_replicas_ready{namespace=\"$namespace\", deployment=~\".*-backend\"})", "legendFormat": "ready", "range": true, "refId": "C" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(kube_horizontalpodautoscaler_spec_min_replicas{namespace=\"$namespace\", horizontalpodautoscaler=~\".*-backend\"})", "legendFormat": "min", "range": true, "refId": "D" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(kube_horizontalpodautoscaler_spec_max_replicas{namespace=\"$namespace\", horizontalpodautoscaler=~\".*-backend\"})", "legendFormat": "max", "range": true, "refId": "E" }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Backend CPU vs. HPA target",
+      "description": "CPU usage per backend pod as % of its request - the number the HPA compares with its target (dashed).",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "HPA target" }, "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [6, 4] } }, { "id": "custom.fillOpacity", "value": 0 }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      },
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "100 * sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"$namespace\", container=\"backend\"}[2m])) / on (pod) group_left sum by (pod) (kube_pod_container_resource_requests{namespace=\"$namespace\", container=\"backend\", resource=\"cpu\"})", "legendFormat": "{{pod}}", "range": true, "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max(kube_horizontalpodautoscaler_spec_target_metric{namespace=\"$namespace\", horizontalpodautoscaler=~\".*-backend\", metric_name=\"cpu\", metric_target_type=\"utilization\"})", "legendFormat": "HPA target", "range": true, "refId": "B" }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Response time: client (k6) vs. server",
+      "description": "k6 p95 per endpoint (whole path incl. load balancer, Traefik, frontend proxy) against the backend's own p95 - the gap is the edge.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 0, "lineWidth": 1, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "server p95" }, "properties": [{ "id": "custom.lineStyle", "value": { "fill": "dash", "dash": [6, 4] } }] }
+        ]
+      },
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max by (name) (k6_http_req_duration_p95{testid=~\"$testid\"})", "legendFormat": "k6 p95 {{name}}", "range": true, "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=\"$namespace\"}[2m])))", "legendFormat": "server p95", "range": true, "refId": "B" }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Requests per backend pod",
+      "description": "Server-side request rate by pod: every ready replica takes its share (round-robin via Service/Traefik), new replicas join within seconds.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 25, "lineWidth": 1, "showPoints": "never", "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (pod) (rate(http_server_requests_seconds_count{namespace=\"$namespace\"}[1m]))", "legendFormat": "{{pod}}", "range": true, "refId": "A" }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Errors: client and server",
+      "description": "k6 failed-request share (any non-2xx/3xx or transport error) and the backend's 5xx share.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 15, "lineWidth": 1, "showPoints": "never" } }, "overrides": [] },
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "100 * max(k6_http_req_failed_rate{testid=~\"$testid\"})", "legendFormat": "k6 failed", "range": true, "refId": "A" },
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "100 * sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\", status=~\"5..\"}[2m])) / sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\"}[2m]))", "legendFormat": "server 5xx", "range": true, "refId": "B" }
+      ]
+    }
+  ]
+}

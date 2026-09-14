@@ -1,0 +1,97 @@
+# One k6 run as a Kubernetes Job (Aufgabe 2). k6 runs INSIDE the cluster, but
+# targets the environment the way a user does: the public host through the
+# load balancer, Traefik and the frontend's /api proxy, so the whole request
+# path - including how Traefik and the frontend spread requests over the
+# backend replicas - is under test, not just the backend Service.
+#
+# Per run, edit or `kubectl set env` the values under env: TARGET_URL picks the
+# environment (charts/auth-stack/values-*.yaml ingress host), PEAK_VUS the
+# load. The results go two ways: the k6 summary in the pod log, and every k6
+# metric into Prometheus via remote write (Grafana: "k6 load test" dashboard,
+# filter by testid = this pod's name).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k6-user-mgmt-service
+  labels:
+    app.kubernetes.io/name: k6
+    app.kubernetes.io/part-of: loadtest
+spec:
+  backoffLimit: 0 # a failed threshold is a result, not something to retry
+  ttlSecondsAfterFinished: 21600 # log stays for 6 h; the metrics stay in Prometheus (7 d)
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k6
+        app.kubernetes.io/part-of: loadtest
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 12345 # the grafana/k6 image's own unprivileged user
+        runAsGroup: 12345
+        fsGroup: 12345
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: k6
+          # grafana/k6 (AGPL-3.0, Grafana Labs). Pinned by digest.
+          image: grafana/k6:2.2.0@sha256:9bd01d6941fca969cb61bb57d2da5ee9b385fe2aa8881df3798c196564d6ace6
+          args:
+            - run
+            - --out=experimental-prometheus-rw
+            - --tag=testid=$(TEST_ID)
+            - /scripts/user-mgmt-service.js
+          env:
+            # ---- what to test -------------------------------------------------
+            - name: TARGET_URL
+              value: https://auth-staging.146-190-206-27.nip.io
+            - name: PEAK_VUS
+              value: "5"
+            # The test account: created on first use via /api/signup, reused
+            # afterwards. Secret `k6-test-user` (keys email, password) is
+            # created out-of-band, see README.md - and register the real
+            # admin BEFORE the first run on a fresh database (the FIRST user
+            # ever registered becomes ADMIN, charts/auth-stack seed SQL).
+            - name: TEST_USER_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: k6-test-user
+                  key: email
+            - name: TEST_USER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: k6-test-user
+                  key: password
+            # ---- where the metrics go -----------------------------------------
+            - name: TEST_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: K6_PROMETHEUS_RW_SERVER_URL
+              value: http://monitoring-kube-prometheus-prometheus.monitoring.svc:9090/api/v1/write
+            - name: K6_PROMETHEUS_RW_TREND_STATS
+              value: p(95),p(99),avg,max
+            - name: K6_PROMETHEUS_RW_STALE_MARKERS
+              value: "true"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: k6-scripts

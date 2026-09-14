@@ -203,7 +203,12 @@ jobs:
         # so a failed build would go green.
         run: ./kustomize build argocd/ > rendered-argocd.yaml
 
-      - name: Validate ArgoCD, cert-manager and monitoring manifests
+      - name: Render the load test manifests
+        # loadtest/ is applied by hand per run (Aufgabe 2), not by ArgoCD -
+        # it still has to build and conform like everything else in the repo.
+        run: ./kustomize build loadtest/ > rendered-loadtest.yaml
+
+      - name: Validate ArgoCD, cert-manager, monitoring and load test manifests
         # CRD schemas from the community catalog; job name is ruleset-pinned.
         # -skip CustomResourceDefinition: the upstream store carries no schema
         # for the kind itself, and the operator CRDs ship verbatim with the
@@ -218,7 +223,7 @@ jobs:
           -schema-location default
           -schema-location "$CRD_SCHEMAS"
           -skip CustomResourceDefinition
-          argocd/ rendered-argocd.yaml rendered-issuer.yaml rendered-monitoring.yaml
+          argocd/ rendered-argocd.yaml rendered-issuer.yaml rendered-monitoring.yaml rendered-loadtest.yaml
 
       - name: sync-defaults.patch adds, never overrides
         # A patch may fill in a field a manifest leaves unset - that is its job.
@@ -279,3 +284,26 @@ jobs:
             | ($kinds + $counts + $dupes + $violations)
             | if length == 0 then "\($apps | length) Applications, \($projects | length - 1) AppProjects: all invariants hold"
               else (map("::error::" + .) | join("\n")) | halt_error(1) end'
+
+  terraform:
+    # Aufgabe 3: the cluster definition must always format, initialise and
+    # validate. No token here on purpose - init -backend=false only fetches the
+    # pinned provider; the drift check (`terraform plan`) is a local,
+    # authenticated step (terraform/README.md).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.16.2"
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform -chdir=terraform fmt -check -recursive -diff
+
+      - name: terraform init (no backend, no credentials)
+        run: terraform -chdir=terraform init -backend=false -input=false
+
+      - name: terraform validate
+        run: terraform -chdir=terraform validate
