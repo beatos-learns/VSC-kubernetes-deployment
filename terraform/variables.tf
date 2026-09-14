@@ -21,8 +21,8 @@ variable "cluster_name" {
   default     = "k8s-test-fra1"
 }
 
-# The values below mirror Doks/Doks.defaults.psd1, which is what created the
-# cluster. Changing one here changes the cluster (after review of the plan).
+# The values below mirror Doks/Doks.defaults.psd1 (what New-DoksCluster
+# creates). Changing one here changes the cluster (after review of the plan).
 variable "region" {
   description = "DigitalOcean region slug."
   type        = string

@@ -1,6 +1,6 @@
 # Aufgabe 3 (Terraform IaC): the existing DOKS cluster under declarative
 # management. Nothing here creates a cluster - imports.tf adopts the one the
-# Doks module created, and `terraform plan` must stay empty afterwards.
+# Doks module creates, and `terraform plan` must stay empty afterwards.
 terraform {
   required_version = ">= 1.10"
 

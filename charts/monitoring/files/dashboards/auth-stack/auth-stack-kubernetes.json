@@ -621,6 +621,7 @@
         "defaults": {
           "unit": "dtdurations",
           "decimals": 0,
+          "noValue": "never",
           "color": { "mode": "thresholds" },
           "thresholds": {
             "mode": "absolute",
@@ -726,7 +727,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "editorMode": "code",
-          "expr": "min((certmanager_certificate_expiration_timestamp_seconds{namespace=~\"$namespace\"} - time()) / 86400)",
+          "expr": "min(((certmanager_certificate_expiration_timestamp_seconds{namespace=~\"$namespace\"} > 0) - time()) / 86400)",
           "legendFormat": "days",
           "range": true,
           "refId": "A"

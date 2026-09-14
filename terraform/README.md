@@ -1,6 +1,6 @@
 # Terraform (Aufgabe 3, Infrastructure as Code)
 
-The DOKS cluster the Doks module created is under Terraform management **as
+The DOKS cluster the Doks module creates is under Terraform management **as
 imported infrastructure** - nothing here recreates it. `terraform plan` on
 `main` shows no changes for the running cluster; a change to a variable is a
 reviewed change to the cluster.
@@ -12,7 +12,7 @@ terraform/
   variables.tf         every reusable value (name, region, version, node pool, tags, …)
   terraform.tfvars     the concrete cluster: id, name, version (nothing sensitive)
   imports.tf           import block that adopts the existing cluster into state
-  generated.tf         the resource - generated from the live cluster, then cleaned
+  generated.tf         the resource, stated as intent (see its header)
   outputs.tf           id, endpoint, version, node pool
   .terraform.lock.hcl  provider build pinned (commit it)
 ```
@@ -40,7 +40,7 @@ export DIGITALOCEAN_TOKEN=...            # bash; or TF_VAR_do_token for -var do_
 file cannot be committed by accident; `terraform.tfvars` is committed and
 therefore holds only the cluster's identity.
 
-## How the cluster was adopted (done once, reproducible)
+## Adopting a cluster (reproducible)
 
 ```sh
 cd terraform
@@ -48,12 +48,11 @@ terraform init
 terraform plan -generate-config-out=generated.tf   # with `provider = digitalocean` in the import block, see imports.tf
 ```
 
-The generated file was then **analysed and cleaned** - the header of
-`generated.tf` lists every edit: the six mutually exclusive GPU/RDMA/registry
+`generated.tf` is the **cleaned** result: the mutually exclusive GPU/RDMA/registry
 plugin blocks (all `enabled = false`, rejected by the provider when present
-together) and the null attributes went, the account-specific network ids are
-left computed, the autoscaler-owned `node_count` is ignored in plans, and
-every literal became a variable. Then:
+together) and the null attributes are omitted, the account-specific network
+ids are left computed, the autoscaler-owned `node_count` is ignored in plans,
+and every literal is a variable. Then:
 
 ```sh
 terraform fmt -check -recursive

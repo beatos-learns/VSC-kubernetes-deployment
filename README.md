@@ -234,13 +234,14 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
   wave 0 where a pod that cannot schedule gates nothing. The wrapper pins the
   CRD chart to the operator release of `charts/monitoring`; `validate.yml`
   refuses a mismatch and renovate bumps both in one PR.
-* **Sized for the pool, honestly.** A 4 GB DOKS node leaves 2.5 GiB to pods;
-  two of them hold the platform, both environments and the observability
-  stack only if every request is what the process really needs — a Prometheus
-  requesting 768Mi while using a gigabyte is the first pod evicted under
-  pressure, an unbounded sidecar is budget nobody counted. Requests are
-  therefore set at what these processes need on a cluster of this size
-  (Prometheus 1Gi with a 2Gi limit, Grafana 256Mi/512Mi, the ArgoCD
+* **Sized for the pool, honestly.** A 4 GB DOKS node leaves about 2.9 GiB to
+  pods (3074892Ki allocatable); two of them hold the platform, both
+  environments and the observability stack only if every request is what the
+  process really needs - a pod that uses more than it requests is the first
+  one evicted under node pressure, and a container without limits is budget
+  nobody counted. Requests therefore follow the measured need (Prometheus 1Gi
+  with a 2Gi limit, Grafana 256Mi/512Mi for ~360Mi idle with the provisioned
+  dashboards, the ArgoCD controller 512Mi for a ~850Mi cluster cache, the
   repo-server 256Mi with 1Gi for rendering kube-prometheus-stack), every
   sidecar has limits, and the `Platform - cluster capacity` dashboard shows
   allocatable vs. requested vs. used per node, OOM kills and throttling, with
@@ -271,10 +272,10 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
   the server-side view and the HPA; the test account is a Secret created
   out-of-band, like every other secret. k6: AGPL-3.0, Grafana Labs.
 * **The cluster is adopted by Terraform, not recreated** (Aufgabe 3).
-  `terraform/` imports the DOKS cluster the Doks module created (import
-  block, `-generate-config-out`, then cleaned: the mutually exclusive GPU
-  plugin blocks, null attributes and account-specific network ids are gone,
-  the autoscaler-owned node count is ignored, every literal is a variable).
+  `terraform/` imports the DOKS cluster the Doks module creates (import
+  block + `-generate-config-out`); `generated.tf` states intent only: no GPU
+  plugin blocks, no null attributes, network ids left computed, the
+  autoscaler-owned node count ignored, every literal a variable.
   `plan` on `main` is empty for the running cluster; a version or pool change
   is a reviewed diff. The API token stays an environment variable, state
   stays local until a second operator needs it, and the load balancer and
@@ -369,11 +370,16 @@ directory reports a schema error against the file it lives in, the rendered
 output is what ArgoCD applies and the only place `sync-defaults.patch` is
 visible merged.
 
+Line endings: `.gitattributes` keeps every text file LF in the repository and
+in the working tree on any platform (it overrides `core.autocrlf`); a checkout
+that still holds CRLF copies is refreshed on a clean tree with
+`git rm -r --cached . && git reset --hard`.
+
 ## Task mapping (grading)
 
 | Aufgabe | Where |
 |---|---|
-| 1 Manifests | `helm template` output of `generic-stack` (Service, Deployment/StatefulSet, ConfigMap, PVC, Ingress per component; the Secret is created out-of-band by design — manifest in `bootstrap/README.md` step 2, the chart renders one from an inline `secret:` map); the stack was built chart-first, the rendered manifests are the `validate.yml` artifacts (90 days) |
+| 1 Manifests | `helm template` output of `generic-stack` (Service, Deployment/StatefulSet, ConfigMap, PVC, Ingress per component; the Secret is created out-of-band by design — manifest in `bootstrap/README.md` step 2, the chart renders one from an inline `secret:` map); the manifests are rendered from the chart and `validate.yml` uploads them as artifacts (90 days) |
 | 2 Helm chart | `generic-stack` in the CI repo (schema-validated, helpers, no hardcoding); consumed here as OCI dependency |
 | 3 ArgoCD | `bootstrap/`, `argocd/` — dedicated `argocd` ns, apps deploy to separate namespaces, dashboard via port-forward; the app-of-apps renders `argocd/` as a kustomize overlay (`kustomization.yaml` is the deploy list, `sync-defaults.patch` the shared sync policy) and `validate.yml` asserts the Application invariants on the build output |
 | 4 Pipeline | CI repo `build.yml`: build/scan/sign/publish on push, immutable version tag + unique `tree-<git tree hash>` tag per source state, registry login via `GITHUB_TOKEN`, no imperative deploy, no cluster credentials; `validate.yml` here is deploy-free; the CI `promote` job commits tag bumps here as PRs (staging auto-merged on green checks, prod human-merged) |

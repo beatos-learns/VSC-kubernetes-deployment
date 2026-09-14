@@ -18,7 +18,7 @@ generic-stack:
 
     backend:
       image:
-        tag: "0.0.1" # promoted by CI
+        tag: "0.0.2" # promoted by CI
       # same scaling mechanics as prod, smaller bounds
       hpa:
         enabled: true
@@ -38,10 +38,10 @@ generic-stack:
       ingress:
         # nip.io host on the Traefik LB IP (bootstrap/README.md step 6)
         hosts:
-          - host: auth-staging.146-190-206-27.nip.io
+          - host: auth-staging.139-59-206-48.nip.io
         tls:
           - hosts:
-              - auth-staging.146-190-206-27.nip.io
+              - auth-staging.139-59-206-48.nip.io
             secretName: auth-staging-tls
 
 dbBackup:

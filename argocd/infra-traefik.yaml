@@ -69,6 +69,9 @@ spec:
             serviceMonitor:
               enabled: true
               jobLabel: app.kubernetes.io/name # job="traefik"
+              # Traefik labels its series by service and entry point; without this
+              # the target's own `service` label would rename them to exported_service
+              honorLabels: true
             # the chart's CRD check reads API discovery, which lags the CRD
             # install (infra-monitoring-crds.yaml) by a cache refresh
             disableAPICheck: true
