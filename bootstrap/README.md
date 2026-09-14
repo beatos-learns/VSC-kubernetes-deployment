@@ -5,7 +5,8 @@ Everything here is applied **once** per cluster, by hand — or by
 After step 4 the cluster converges on git: no further `kubectl apply` or
 `helm install` against the apps, ever (Aufgabe 4).
 
-Prerequisites: `doctl`, `kubectl`, `helm`. Cluster sizing: 2 × `s-2vcpu-4gb`
+Prerequisites: `doctl`, `kubectl`, `helm`, `terraform` (the managed database
+and its credentials come from `terraform/`, step 2). Cluster sizing: 2 × `s-2vcpu-4gb`
 (autoscale 2–5) — see `Doks/Doks.defaults.psd1`; the quotas, anti-affinity and
 PDBs assume at least two nodes.
 
@@ -19,15 +20,23 @@ kubectl get nodes
 
 ## 2. Namespaces and secrets (out-of-band, never in git)
 
-The chart contract expects one pre-created Secret per namespace
-(`existingSecret: auth-stack-secrets`, keys `db-password` and `jwt-secret`).
-Create it from a manifest on stdin — never with `--from-literal` — so the
-values stay out of shell history and process listings:
+Each environment namespace needs one pre-created Secret
+(`existingSecret: auth-stack-secrets`): the managed database's endpoint and
+login role for the backend (`db-url`, `db-user`, `db-password`), the seed
+Job's connection data and admin credentials (`db-host`, `db-port`, `db-name`,
+`db-admin-user`, `db-admin-password`) and a random `jwt-secret`. The database
+values are Terraform outputs (`terraform/README.md`, `terraform apply` first).
+Create the Secret from a manifest on stdin — never with `--from-literal` — so
+the values stay out of shell history and process listings:
 
 ```sh
+db=$(terraform -chdir=terraform output -json database)
+creds=$(terraform -chdir=terraform output -json database_credentials)
 for ns in auth-staging auth-prod; do
+  env=${ns#auth-}
   kubectl create namespace "$ns" 2>/dev/null || true
   kubectl -n "$ns" get secret auth-stack-secrets >/dev/null 2>&1 && continue
+  host=$(jq -r .host <<<"$db"); port=$(jq -r .port <<<"$db"); name=$(jq -r ".databases.$env" <<<"$db")
   kubectl create -f - <<EOF
 apiVersion: v1
 kind: Secret
@@ -36,7 +45,14 @@ metadata:
   namespace: $ns
 type: Opaque
 stringData:
-  db-password: "$(openssl rand -base64 24)"
+  db-host: "$host"
+  db-port: "$port"
+  db-name: "$name"
+  db-url: "jdbc:postgresql://$host:$port/$name?sslmode=require"
+  db-user: "$(jq -r ".environments.$env.user" <<<"$creds")"
+  db-password: "$(jq -r ".environments.$env.password" <<<"$creds")"
+  db-admin-user: "$(jq -r .admin.user <<<"$creds")"
+  db-admin-password: "$(jq -r .admin.password <<<"$creds")"
   jwt-secret: "$(openssl rand -base64 48)"
 EOF
 done
@@ -87,8 +103,8 @@ The GHCR packages are public; no pull secret is needed. (For private packages:
 `read:packages` fine-grained PAT, and set `global.imagePullSecrets` in
 `charts/auth-stack/values.yaml`.)
 
-> The DB password is generated independently per environment and is baked
-> into the PostgreSQL volume on first start — see *Rotation* below.
+> The admin credentials are read only by the seed Job (an ArgoCD PreSync
+> hook); the backend pods never see them.
 
 ## 3. Install ArgoCD (dedicated namespace, Aufgabe 3)
 
@@ -169,36 +185,29 @@ kubectl -n auth-staging get certificate,challenge
 
 ## 8. Backups and restore
 
-A CronJob per environment (`dbBackup` in the values) writes `pg_dump`
-archives to the `auth-db-backup` PVC (never pruned or cascade-deleted) and
-keeps the newest N:
+Backups are the provider's: the managed cluster takes daily backups (7 days
+retained) and supports point-in-time recovery. A restore creates a *new*
+database cluster from a backup or a timestamp:
 
 ```sh
-kubectl -n auth-prod get cronjob auth-db-backup                 # schedule / last run
-kubectl -n auth-prod create job --from=cronjob/auth-db-backup backup-now
-kubectl -n auth-prod get jobs -l app.kubernetes.io/name=db-backup
+doctl databases backups list <cluster-id>            # id: terraform -chdir=terraform output
+doctl databases create auth-restore --engine pg --version 16 --region fra1 --size db-s-1vcpu-1gb \n  --restore-from-cluster-name k8s-test-fra1-pg --restore-from-timestamp <RFC3339>
 ```
 
-Restore (everything through git — no imperative step):
-
-1. Scale the backend down: set `backend.hpa.enabled: false` and
-   `backend.replicas: 0` in the environment overlay, merge, wait for the sync.
-2. Set `dbBackup.restore.file: app-<timestamp>.dump` (list the PVC with a
-   `backup-now` job's log), merge → a one-off `auth-db-restore-*` Job runs
-   `pg_restore --clean --if-exists` against the database.
-3. Revert both changes, merge; the backend comes back on the restored data.
-
-Volumes are DigitalOcean block storage; take a volume snapshot before risky
-changes (`doctl compute volume-action snapshot`).
+Pointing an environment at the restored cluster is a change of its Secret's
+`db-*` keys followed by `rollout restart deployment/auth-backend` — or,
+declaratively, adopting the restored cluster in `terraform/database.tf`.
 
 ## 9. Schema changes
 
-The seed SQL in `charts/auth-stack/values.yaml` creates the schema once per
-fresh volume; the backend runs with `ddl-auto: validate` in every environment
-and refuses to start on drift. A new backend build that changes entities
-therefore needs a migration on existing volumes (a one-off Job with `psql`
-like the restore Job) **and** the seed SQL updated for fresh ones — the
-overlays' tag bump and the migration belong in the same PR.
+The seed SQL in `charts/auth-stack/values.yaml` (`dbSeed.files`) is applied
+before every sync by the PreSync hook and is idempotent; the backend runs
+with `ddl-auto: validate` in every environment and refuses to start on
+drift. A new backend build that changes entities therefore ships with the
+matching idempotent `ALTER` / `CREATE ... IF NOT EXISTS` statements in that
+file — the overlays' tag bump and the migration belong in the same PR, and
+the hook applies them before the new pods start. The last run's log:
+`kubectl -n <ns> logs job/auth-db-seed`.
 
 ## 10. Monitoring
 
@@ -265,7 +274,8 @@ autoscaler's cue (`min_nodes`/`max_nodes` in `terraform/`).
 | Secret | Procedure |
 |---|---|
 | `jwt-secret` | update the key in `auth-stack-secrets`, then `kubectl -n <ns> rollout restart deployment/auth-backend` — all sessions are invalidated |
-| `db-password` | `ALTER ROLE app PASSWORD '<new>'` inside `auth-db-0`, update the key in the Secret, then `rollout restart deployment/auth-backend`; the Secret alone does **not** change the database password |
+| `db-password` | reset the role on the managed cluster (`doctl databases user reset <cluster-id> auth_<env>`), copy the new value into the Secret, then `rollout restart deployment/auth-backend`; `terraform apply` afterwards refreshes the value in state |
+| `db-admin-password` | `doctl databases user reset <cluster-id> doadmin`, update the key in every environment's Secret; the next sync's seed Job uses it |
 | ArgoCD admin | `argocd account update-password` (step 5) |
 | `grafana-admin` | update the key, then `kubectl -n monitoring rollout restart deployment/monitoring-grafana` |
 | `alertmanager-webhook` | update the key; the file is re-read per notification (step 10) |

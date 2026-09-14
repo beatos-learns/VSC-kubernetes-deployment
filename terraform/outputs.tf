@@ -23,3 +23,30 @@ output "node_pool" {
     max_nodes  = digitalocean_kubernetes_cluster.this.node_pool[0].max_nodes
   }
 }
+
+output "database" {
+  description = "Managed PostgreSQL endpoint (private, VPC-only) and the database per environment - what the auth-stack-secrets Secret carries (bootstrap/README.md step 2)."
+  value = {
+    host      = digitalocean_database_cluster.postgres.private_host
+    port      = digitalocean_database_cluster.postgres.port
+    version   = digitalocean_database_cluster.postgres.version
+    databases = { for env, db in digitalocean_database_db.environment : env => db.name }
+  }
+}
+
+output "database_credentials" {
+  description = "Login role per environment and the cluster admin, for the auth-stack-secrets Secret. Sensitive: read with terraform output -json database_credentials."
+  sensitive   = true
+  value = {
+    admin = {
+      user     = digitalocean_database_cluster.postgres.user
+      password = digitalocean_database_cluster.postgres.password
+    }
+    environments = {
+      for env, user in digitalocean_database_user.environment : env => {
+        user     = user.name
+        password = user.password
+      }
+    }
+  }
+}

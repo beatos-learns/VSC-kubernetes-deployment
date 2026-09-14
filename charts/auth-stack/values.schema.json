@@ -20,31 +20,28 @@
         }
       }
     },
-    "dbBackup": {
+    "dbSeed": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled"],
+      "required": ["enabled", "image", "files"],
       "properties": {
         "enabled": { "type": "boolean" },
-        "schedule": { "type": "string", "minLength": 9 },
-        "keep": { "type": "integer", "minimum": 1 },
-        "storage": { "$ref": "#/definitions/quantity" },
         "image": {
           "type": "object",
           "additionalProperties": false,
+          "required": ["registry", "repository"],
           "properties": {
-            "registry": { "type": "string" },
-            "repository": { "type": "string" },
+            "registry": { "type": "string", "minLength": 1 },
+            "repository": { "type": "string", "minLength": 1 },
             "tag": { "type": "string" }
           }
         },
         "resources": { "type": "object" },
-        "restore": {
+        "files": {
           "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "file": { "type": "string", "pattern": "^$|^[A-Za-z0-9._-]+\\.dump$" }
-          }
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[A-Za-z0-9._-]+\\.sql$" },
+          "additionalProperties": { "type": "string", "minLength": 1 }
         }
       }
     },
@@ -91,7 +88,7 @@
         "limitRange": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "container", "pvc"],
+          "required": ["enabled", "container"],
           "properties": {
             "enabled": { "type": "boolean" },
             "container": {
@@ -103,19 +100,13 @@
                 "default": { "$ref": "#/definitions/cpuMemory" },
                 "max": { "$ref": "#/definitions/cpuMemory" }
               }
-            },
-            "pvc": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["max"],
-              "properties": { "max": { "$ref": "#/definitions/quantity" } }
             }
           }
         },
         "networkPolicy": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "ingressControllerNamespace", "dnsNamespace", "acmeSolver", "monitoring"],
+          "required": ["enabled", "ingressControllerNamespace", "dnsNamespace", "acmeSolver", "monitoring", "database"],
           "properties": {
             "enabled": { "type": "boolean" },
             "ingressControllerNamespace": { "type": "string", "minLength": 1 },
@@ -136,6 +127,15 @@
               "properties": {
                 "enabled": { "type": "boolean" },
                 "namespace": { "type": "string", "minLength": 1 }
+              }
+            },
+            "database": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["cidr", "port"],
+              "properties": {
+                "cidr": { "type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" },
+                "port": { "$ref": "#/definitions/port" }
               }
             }
           }

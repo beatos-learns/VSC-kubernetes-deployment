@@ -1,0 +1,140 @@
+{{- with .Values.dbSeed }}
+{{- if .enabled }}
+{{/*
+  Schema seed as an ArgoCD PreSync hook: psql from the stack's PostgreSQL image
+  applies every file in dbSeed.files to the managed database before each sync,
+  as the cluster admin. The statements are idempotent; the application role is
+  granted DML only. Endpoint and both credentials come from the environment
+  Secret (bootstrap/README.md step 2). BeforeHookCreation keeps the last run's
+  Job and log until the next sync.
+*/}}
+{{- $gs := index $.Values "generic-stack" }}
+{{- $db := $gs.components.db }}
+{{- $backend := $gs.components.backend }}
+{{- $name := printf "%s-db-seed" $.Release.Name }}
+{{- $tag := .image.tag | default $db.image.tag }}
+{{- $image := printf "%s/%s:%s" .image.registry .image.repository (toString $tag) }}
+{{- $secret := tpl $backend.existingSecret $ }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: db-seed
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+data:
+  {{- range $file, $content := .files }}
+  {{ $file }}: |-
+    {{- $content | nindent 4 }}
+  {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: db-seed
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db-seed # selected by templates/networkpolicy.yaml
+        {{- include "auth-stack.labels" $ | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with $gs.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ $db.security.uid }}
+        runAsGroup: {{ $db.security.gid }}
+        fsGroup: {{ $db.security.gid }}
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: psql
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-euo", "pipefail", "-c"] # the image ENTRYPOINT is the postgres supervisor
+          args:
+            - |
+              export PGPASSWORD="$(cat /run/secrets/db-admin-password)"
+              for f in /seed/*.sql; do
+                echo "applying ${f##*/} to ${PGDATABASE}@${PGHOST} as ${PGUSER}"
+                psql --no-password -v ON_ERROR_STOP=1 -v app_user="${APP_USER}" -f "${f}"
+              done
+          env:
+            - name: PGHOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: db-host
+            - name: PGPORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: db-port
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: db-name
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: db-admin-user
+            - name: APP_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: db-user
+            - name: PGSSLMODE
+              value: require
+            - name: PGCONNECT_TIMEOUT
+              value: "10"
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          volumeMounts:
+            - name: seed
+              mountPath: /seed
+              readOnly: true
+            - name: secret
+              mountPath: /run/secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: seed
+          configMap:
+            name: {{ $name }}
+        - name: secret
+          secret:
+            secretName: {{ $secret }}
+            items:
+              - key: db-admin-password
+                path: db-admin-password
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+{{- end }}

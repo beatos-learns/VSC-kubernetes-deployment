@@ -19,8 +19,5 @@ spec:
       max:
         cpu: {{ .container.max.cpu | quote }}
         memory: {{ .container.max.memory | quote }}
-    - type: PersistentVolumeClaim
-      max:
-        storage: {{ .pvc.max | quote }}
 {{- end }}
 {{- end }}

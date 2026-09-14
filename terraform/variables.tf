@@ -81,3 +81,30 @@ variable "maintenance_window" {
     start_time = "00:00"
   }
 }
+
+# Managed PostgreSQL (database.tf). One database and one login role per
+# environment on a single cluster; the sizes are the smallest DigitalOcean
+# offers, matching the throwaway character of the platform.
+variable "environments" {
+  description = "Environments that get a database and a login role (auth_<name>) on the managed PostgreSQL cluster - the auth-stack namespaces without their auth- prefix."
+  type        = set(string)
+  default     = ["staging", "prod"]
+}
+
+variable "database_version" {
+  description = "PostgreSQL major version of the managed cluster (doctl databases options versions --engine pg); the seed SQL targets 16."
+  type        = string
+  default     = "16"
+}
+
+variable "database_size" {
+  description = "Size slug of the database node (doctl databases options slugs --engine pg)."
+  type        = string
+  default     = "db-s-1vcpu-1gb"
+}
+
+variable "database_trusted_ips" {
+  description = "Operator addresses (IP or CIDR) allowed through the database firewall besides the Kubernetes cluster, e.g. for psql from a workstation. Empty: cluster-only."
+  type        = list(string)
+  default     = []
+}
