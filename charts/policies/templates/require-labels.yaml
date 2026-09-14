@@ -1,0 +1,40 @@
+{{/*
+  Workloads of the application namespaces carry the labels every selector,
+  NetworkPolicy, ServiceMonitor and dashboard of this repository keys on.
+*/}}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-labels
+  labels:
+    {{- include "policies.labels" . | nindent 4 }}
+  annotations:
+    policies.kyverno.io/title: Require the app.kubernetes.io/name and instance labels
+    policies.kyverno.io/category: Operations
+    policies.kyverno.io/severity: low
+    policies.kyverno.io/subject: Deployment, StatefulSet, Job, CronJob
+    policies.kyverno.io/description: >-
+      Deployments, StatefulSets, Jobs and CronJobs in the application
+      namespaces must carry app.kubernetes.io/name and app.kubernetes.io/instance.
+spec:
+  background: true
+  rules:
+    - name: name-and-instance
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+                - Job
+                - CronJob
+              namespaces:
+                {{- toYaml .Values.applicationNamespaces | nindent 16 }}
+      validate:
+        failureAction: Enforce
+        message: the labels app.kubernetes.io/name and app.kubernetes.io/instance are required
+        pattern:
+          metadata:
+            labels:
+              app.kubernetes.io/name: "?*"
+              app.kubernetes.io/instance: "?*"

@@ -1,0 +1,44 @@
+{{/*
+  Long-running workloads of the application namespaces carry a liveness and a
+  readiness probe on every container: without them a hung pod keeps receiving
+  traffic and a rolling update cannot tell ready from started. Controllers are
+  matched directly (Jobs have no probes by design).
+*/}}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-probes
+  labels:
+    {{- include "policies.labels" . | nindent 4 }}
+  annotations:
+    policies.kyverno.io/title: Require liveness and readiness probes
+    policies.kyverno.io/category: Operations
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Deployment, StatefulSet
+    policies.kyverno.io/description: >-
+      Deployments and StatefulSets in the application namespaces must define a
+      liveness and a readiness probe on every container.
+spec:
+  background: true
+  rules:
+    - name: liveness-and-readiness
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+              namespaces:
+                {{- toYaml .Values.applicationNamespaces | nindent 16 }}
+      validate:
+        failureAction: Enforce
+        message: every container must define livenessProbe and readinessProbe
+        pattern:
+          spec:
+            template:
+              spec:
+                containers:
+                  - livenessProbe:
+                      periodSeconds: ">0"
+                    readinessProbe:
+                      periodSeconds: ">0"

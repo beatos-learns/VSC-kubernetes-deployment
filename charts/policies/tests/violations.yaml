@@ -1,0 +1,235 @@
+# Deliberately invalid Deployments, one per policy: each is valid in every
+# other respect, so exactly one rule rejects it. Proof of enforcement, twice:
+# validate.yml runs them through the Kyverno CLI against the rendered policies
+# and expects one failure per document; on the cluster
+# `kubectl apply -f charts/policies/tests/violations.yaml` is denied by the
+# admission webhook (bootstrap/README.md step 11). Never part of a sync.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: violates-require-resources
+  namespace: auth-staging
+  labels:
+    app.kubernetes.io/name: policy-test
+    app.kubernetes.io/instance: violations
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: policy-test
+      app.kubernetes.io/instance: violations
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: policy-test
+        app.kubernetes.io/instance: violations
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10021
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: ghcr.io/beatos-learns/vsc-kubernetes-containers/user-mgmt-service:0.0.2
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 9090
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: violates-require-probes
+  namespace: auth-staging
+  labels:
+    app.kubernetes.io/name: policy-test
+    app.kubernetes.io/instance: violations
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: policy-test
+      app.kubernetes.io/instance: violations
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: policy-test
+        app.kubernetes.io/instance: violations
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10021
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: ghcr.io/beatos-learns/vsc-kubernetes-containers/user-mgmt-service:0.0.2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: violates-require-labels
+  namespace: auth-staging
+  labels:
+    app.kubernetes.io/name: policy-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: policy-test
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: policy-test
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10021
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: ghcr.io/beatos-learns/vsc-kubernetes-containers/user-mgmt-service:0.0.2
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 9090
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: violates-restrict-images-registry
+  namespace: auth-staging
+  labels:
+    app.kubernetes.io/name: policy-test
+    app.kubernetes.io/instance: violations
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: policy-test
+      app.kubernetes.io/instance: violations
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: policy-test
+        app.kubernetes.io/instance: violations
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10021
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: web
+          image: docker.io/library/nginx:1.27
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: violates-restrict-images-latest
+  namespace: auth-staging
+  labels:
+    app.kubernetes.io/name: policy-test
+    app.kubernetes.io/instance: violations
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: policy-test
+      app.kubernetes.io/instance: violations
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: policy-test
+        app.kubernetes.io/instance: violations
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10021
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: backend
+          image: ghcr.io/beatos-learns/vsc-kubernetes-containers/user-mgmt-service:latest
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 9090
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 9090
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]

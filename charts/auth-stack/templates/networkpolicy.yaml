@@ -1,7 +1,7 @@
 {{- with .Values.namespacePolicy.networkPolicy }}
 {{- if .enabled }}
 {{/*
-  Namespace isolation (Aufgabe 5): deny all ingress AND egress, then allow only
+  Namespace isolation (Aufgabe 5, Namespaces): deny all ingress AND egress, then allow only
   the flows of the stack: edge -> frontend -> backend -> managed database (its
   private endpoint in the cluster's VPC), the seed Job -> managed database,
   DNS for everyone, cert-manager's HTTP-01 solver from the edge, metrics from

@@ -1,13 +1,13 @@
 # Bootstrap (one-time, imperative)
 
 Everything here is applied **once** per cluster, by hand — or by
-`Bootstrap-DoksCluster` from the `Doks` module, which runs exactly these steps.
+`Bootstrap-DoksCluster` from the `Doks` module, which runs steps 2 to 4.
 After step 4 the cluster converges on git: no further `kubectl apply` or
-`helm install` against the apps, ever (Aufgabe 4).
+`helm install` against the apps, ever (Aufgabe 4, Pipeline).
 
 Prerequisites: `doctl`, `kubectl`, `helm`, `terraform` (the managed database
-and its credentials come from `terraform/`, step 2). Cluster sizing: 2 × `s-2vcpu-4gb`
-(autoscale 2–5) — see `Doks/Doks.defaults.psd1`; the quotas, anti-affinity and
+and its credentials come from `terraform/`, step 1). Cluster sizing: 2 × `s-2vcpu-4gb`
+(autoscale 2–10) — see `Doks/Doks.defaults.psd1`; the quotas, anti-affinity and
 PDBs assume at least two nodes.
 
 ## 1. Cluster access
@@ -17,6 +17,11 @@ doctl auth init
 doctl kubernetes cluster kubeconfig save <cluster-name>
 kubectl get nodes
 ```
+
+`New-DoksCluster` from the `Doks` module does the same for a fresh cluster.
+Either way Terraform adopts the cluster next and creates the managed database:
+its id and version go into `terraform/terraform.tfvars`, then
+`terraform apply` (`terraform/README.md`).
 
 ## 2. Namespaces and secrets (out-of-band, never in git)
 
@@ -106,7 +111,7 @@ The GHCR packages are public; no pull secret is needed. (For private packages:
 > The admin credentials are read only by the seed Job (an ArgoCD PreSync
 > hook); the backend pods never see them.
 
-## 3. Install ArgoCD (dedicated namespace, Aufgabe 3)
+## 3. Install ArgoCD (dedicated namespace, Aufgabe 3 ArgoCD)
 
 ```sh
 helm repo add argo https://argoproj.github.io/argo-helm
@@ -128,10 +133,10 @@ kubectl -n argocd get applications -w
 ```
 
 The root app syncs `argocd/`: the two AppProjects, the Prometheus Operator
-CRDs, Traefik, cert-manager and its ClusterIssuer, metrics-server (DOKS does
-not ship one; the HPA needs it), the monitoring stack, ArgoCD itself, and the
-two environment Applications (sync-waves −4 … 0). `kubectl top nodes` works
-once metrics-server is up.
+CRDs, Traefik, cert-manager and its ClusterIssuer, Kyverno and the cluster
+policies, metrics-server (DOKS does not ship one; the HPA needs it), the
+monitoring stack, ArgoCD itself, and the two environment Applications
+(sync-waves −4 … 0). `kubectl top nodes` works once metrics-server is up.
 
 `argocd/` is a kustomize directory (`argocd/kustomization.yaml`), which is how
 the shared sync policy stays in one file. `root.yaml` is deliberately kept
@@ -191,7 +196,8 @@ database cluster from a backup or a timestamp:
 
 ```sh
 doctl databases backups list <cluster-id>            # id: terraform -chdir=terraform output
-doctl databases create auth-restore --engine pg --version 16 --region fra1 --size db-s-1vcpu-1gb \n  --restore-from-cluster-name k8s-test-fra1-pg --restore-from-timestamp <RFC3339>
+doctl databases create auth-restore --engine pg --version 16 --region fra1 --size db-s-1vcpu-1gb \
+  --restore-from-cluster-name k8s-test-fra1-pg --restore-from-timestamp <RFC3339>
 ```
 
 Pointing an environment at the restored cluster is a change of its Secret's
@@ -226,12 +232,13 @@ kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-alertmanager 9
 Grafana takes the credentials from the `grafana-admin` Secret (step 2); the
 dashboards of this repo live in the **auth-stack** folder (user-mgmt-service,
 Kubernetes resources, k6 load test) and the **platform** folder (cluster
-capacity, edge: Traefik + cert-manager, ArgoCD), next to the bundled
-kube-prometheus set. That the application is really scraped is visible in
+capacity, edge: Traefik + cert-manager, ArgoCD, Kyverno Metrics), next to the
+bundled kube-prometheus set. That the application is really scraped is visible in
 Prometheus → Status → Target health (`serviceMonitor/auth-staging/…`,
 `podMonitor/auth-staging/…` and the `auth-prod` counterparts must be *up*;
-the platform jobs `traefik`, `cert-manager`, `cainjector`, `webhook` and
-`argocd-*-metrics` next to them) and here:
+the platform jobs `traefik`, `cert-manager`, `cainjector`, `webhook`,
+`argocd-*-metrics`, `kyverno-admission-controller` and
+`kyverno-reports-controller` next to them) and here:
 
 ```sh
 kubectl -n auth-prod get servicemonitor,prometheusrule
@@ -268,6 +275,43 @@ first: a 4 GB DOKS node leaves about 2.9 GiB to pods, and the dashboard shows pe
 node what is allocatable, requested and used, which containers exceed their
 request or are throttled, and OOM kills. A pod that stays Pending is the
 autoscaler's cue (`min_nodes`/`max_nodes` in `terraform/`).
+
+## 11. Policies
+
+`infra-kyverno` installs Kyverno into the `policy` namespace, `infra-policies`
+the ClusterPolicies of `charts/policies` (one wave later, one wave before the
+environments). What is enforced, and what Kyverno's background scan found:
+
+```sh
+kubectl get clusterpolicy                     # ADMISSION true, READY True, and the failure action
+kubectl -n policy get pods
+kubectl get policyreport -A                   # pass / fail counts per judged resource
+kubectl -n auth-staging get policyreport -o yaml | grep -B3 -A6 'result: fail'
+```
+
+The proof that a violating Deployment is rejected: the fixture holds five
+Deployments, each breaking one policy, and the admission webhook denies every
+one of them (the same file `validate.yml` runs through the Kyverno CLI):
+
+```sh
+kubectl apply -f ../charts/policies/tests/violations.yaml
+# Error from server: error when creating "...": admission webhook "validate.kyverno.svc-fail" denied the request:
+#   resource Deployment/auth-staging/violates-require-probes was blocked due to the following policies
+#   require-probes:
+#     liveness-and-readiness: 'validation error: every container must define livenessProbe and readinessProbe. ...'
+# (one such error per document; nothing is created)
+kubectl -n auth-staging get deployments | grep -c violates   # 0
+```
+
+Kyverno's metrics are scraped like the other platform apps (Prometheus
+targets `kyverno-admission-controller`, `kyverno-reports-controller`) and its
+dashboard **Kyverno Metrics** sits in Grafana's platform folder.
+
+Only that test is manual. The protection is not: Kyverno and the policies are
+Applications like everything else, ArgoCD self-heals a deleted policy or pod,
+and Kyverno refuses any change to its webhook configurations that does not
+come from its own ServiceAccount. A policy changes the way everything else
+does - in `charts/policies`, through a PR that `validate.yml` gates.
 
 ## Rotation
 

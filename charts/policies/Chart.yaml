@@ -1,0 +1,8 @@
+apiVersion: v2
+name: policies
+description: >-
+  The cluster's Kyverno ClusterPolicies (Aufgabe 5, Kyverno): what every workload must
+  declare, where application images may come from and who must have signed
+  them. Rendered by argocd/infra-policies.yaml once Kyverno itself is up.
+type: application
+version: 0.1.0

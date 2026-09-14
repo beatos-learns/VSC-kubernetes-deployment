@@ -1,4 +1,4 @@
-# One k6 run as a Kubernetes Job (Aufgabe 2). k6 runs INSIDE the cluster, but
+# One k6 run as a Kubernetes Job (Aufgabe 2, Chaos Testing). k6 runs INSIDE the cluster, but
 # targets the environment the way a user does: the public host through the
 # load balancer, Traefik and the frontend's /api proxy, so the whole request
 # path - including how Traefik and the frontend spread requests over the

@@ -3,12 +3,14 @@
 GitOps **Ops repository** for the auth stack built in
 [VSC-kubernetes-containers](https://github.com/beatos-learns/VSC-kubernetes-containers)
 (CI repo: images + the `generic-stack` Helm chart, published to GHCR as signed
-OCI artifacts). This repo declares *what runs where*: environment values,
-ArgoCD Application manifests, and namespace policy for a DigitalOcean
-Kubernetes (DOKS) cluster.
+OCI artifacts). This repo declares *what runs where* on a DigitalOcean
+Kubernetes (DOKS) cluster: environment values, ArgoCD Application manifests,
+namespace and cluster policy, and the cluster with its managed database as
+Terraform code.
 
-TEKO «Verteilte Systeme, Containerisierung» — Orchestrierung (the assignment
-PDF is not part of the repository).
+TEKO «Verteilte Systeme, Containerisierung» — Orchestrierung and the Tooling
+block (the assignment PDFs are not part of the repository; the task tables at
+the end map both).
 
 ## How a change reaches the cluster
 
@@ -21,13 +23,14 @@ PDF is not part of the repository).
    └─ sign images + chart (cosign, keyless)
    └─ promote ──────────── PR, auto-merge on ✓ ────► values-staging.yaml (tag bump)
                            PR, human-merged ───────► values-prod.yaml   (prod gate)
-                                                              │ validate: lint, render,
-                                                              │ kubeconform, signatures
+                                                              │ validate: lint, render, kubeconform,
+                                                              │ signatures, Kyverno policies
                                                               ▼ pull (no push deploys!)
                                                      ArgoCD @ DOKS
                                                        ├─ ns argocd          ArgoCD (manages itself)
                                                        ├─ ns traefik         ingress controller (1 DO LB, TLS)
                                                        ├─ ns cert-manager    ACME certificates for the hosts
+                                                       ├─ ns policy          Kyverno: admission policies (charts/policies)
                                                        ├─ ns metrics-server  metrics API for the HPA
                                                        ├─ ns monitoring      Prometheus, Grafana, Alertmanager
                                                        ├─ ns auth-staging    release "auth"
@@ -38,16 +41,17 @@ PDF is not part of the repository).
 
 Nothing in either repo runs `kubectl apply` or `helm upgrade` against the
 cluster. GitHub workflows build, validate, and **commit**; ArgoCD pulls.
-The only imperative step is the one-time bootstrap (`bootstrap/README.md`) -
-automated by the `Doks` PowerShell module as
-`New-DoksCluster | Bootstrap-DoksCluster` (see `Doks/README.md`).
+The only imperative steps are the one-time ones per cluster
+(`bootstrap/README.md`): `New-DoksCluster` creates the cluster,
+`terraform apply` adopts it and creates the managed database,
+`Bootstrap-DoksCluster` hands it to ArgoCD (`Doks/README.md`).
 
 ## Layout
 
 ```
 bootstrap/                  one-time cluster setup: ArgoCD install values,
                             secrets procedure (documented, never committed),
-                            backup/restore and rotation runbooks
+                            restore, monitoring and policy checks, rotation
 argocd/                     synced by the root app (sync-waves -4 … 0):
   kustomization.yaml        what the root app renders; every file below must
                             be listed here or it is not deployed
@@ -67,9 +71,13 @@ argocd/                     synced by the root app (sync-waves -4 … 0):
                             metrics Service + ServiceMonitor enabled
   infra-cert-manager.yaml   cert-manager (official chart, Apache-2.0);
                             ServiceMonitor enabled
+  infra-kyverno.yaml        Kyverno (official chart, Apache-2.0) in ns policy,
+                            wave -2; ServiceMonitors + dashboard enabled
   infra-cert-manager-issuer.yaml
                             charts/cert-manager-issuer, wave-ordered after
                             the cert-manager CRDs
+  infra-policies.yaml       charts/policies, wave -1: after Kyverno, before
+                            the environments the policies judge
   infra-metrics-server.yaml metrics-server (Kubernetes SIG, Apache-2.0)
   infra-monitoring.yaml     charts/monitoring (kube-prometheus-stack)
   argocd.yaml               ArgoCD reconciling its own installation (metrics +
@@ -91,6 +99,15 @@ charts/monitoring/          wrapper chart:
                             k6 load test), platform/ (cluster capacity, edge:
                             Traefik + cert-manager, ArgoCD)
   templates/dashboards.yaml renders them into sidecar-labelled ConfigMaps
+charts/policies/            the cluster's ClusterPolicies (Aufgabe 5, Kyverno):
+  values.yaml               application namespaces, the CI registry path, the
+                            signing identity (same regex as validate.yml)
+  templates/                require-resources (every namespace),
+                            require-probes, require-labels, restrict-images,
+                            verify-image-signatures (application namespaces)
+  tests/violations.yaml     five Deployments, one violation each: the
+                            rejection proof (Kyverno CLI in CI, kubectl apply
+                            against the cluster)
 charts/auth-stack/          wrapper chart:
   Chart.yaml                pins generic-stack (OCI dependency from GHCR)
   values.yaml               DO-common: the disabled db component, datasource
@@ -109,16 +126,17 @@ charts/auth-stack/          wrapper chart:
                             the managed database), ServiceMonitor +
                             PrometheusRule for the backend
 Doks/                       PowerShell module: create/connect/delete the
-                            throwaway DOKS cluster and run the bootstrap
-                            (New-DoksCluster | Bootstrap-DoksCluster);
-                            see Doks/README.md
-terraform/                  the DOKS cluster (adopted, Aufgabe 3) and the
-                            managed PostgreSQL (created, Aufgabe 4) as code:
+                            throwaway DOKS cluster and run the bootstrap once
+                            Terraform has created the database; see
+                            Doks/README.md
+terraform/                  the DOKS cluster (adopted, Aufgabe 3 Terraform) and
+                            the managed PostgreSQL (created, Aufgabe 4 Managed
+                            Ressources) as code:
                             provider, import block, cluster resource, database
                             + roles + firewall, variables, outputs that feed
                             the Secrets; token via environment only; see
                             terraform/README.md
-loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
+loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos Testing):
                             namespace + policy, script ConfigMap, Job; applied
                             per run, results in Prometheus/Grafana; see
                             loadtest/README.md
@@ -126,17 +144,23 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
   validate.yml              PR/main gate: helm lint + template + kubeconform
                             for both env overlays, the issuer chart, the
                             monitoring chart, its CRD chart (same operator
-                            release enforced) and the ArgoCD manifests; builds
-                            argocd/ with kustomize and asserts the Application
-                            invariants on the result (see Design decisions);
-                            renders Traefik, cert-manager and ArgoCD with the
-                            Applications' values and proves every ServiceMonitor
-                            selects a Service; checks the dashboards (valid
-                            JSON, unique uids); every referenced image and the
-                            chart dependency must exist in GHCR and carry a
-                            cosign signature from the CI repo's workflow;
-                            uploads the rendered env manifests (debug aid);
-                            builds loadtest/ with kustomize and
+                            release enforced), the policies chart and the
+                            ArgoCD manifests; builds argocd/ with kustomize
+                            and asserts the Application invariants on the
+                            result (see Design decisions); renders Traefik,
+                            cert-manager, Kyverno, metrics-server and ArgoCD
+                            with the Applications' values, proves every
+                            ServiceMonitor selects a Service and runs the
+                            policies over them with the Kyverno CLI, as over
+                            the env manifests (must be admitted) and the
+                            fixture (must be rejected, one policy per
+                            document); the policies' signing identity must
+                            equal the workflow's; checks the dashboards
+                            (valid JSON, unique uids); every referenced image
+                            and the chart dependency must exist in GHCR and
+                            carry a cosign signature from the CI repo's
+                            workflow; uploads the rendered env manifests
+                            (debug aid); builds loadtest/ with kustomize and
                             kubeconform-checks it; runs terraform
                             fmt/init/validate (no credentials)
 ```
@@ -169,18 +193,20 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
   seed Job's admin credentials and the random `jwt-secret` are created
   out-of-band per namespace from a manifest on stdin (never on a command
   line) and referenced via `existingSecret`; each pod receives only the keys
-  it names. Rotation runbook in `bootstrap/README.md`. Upgrade path if full
-  GitOps for secrets is wanted later: Sealed Secrets (Apache-2.0).
+  it names. Rotation runbook in `bootstrap/README.md`. Sealed Secrets
+  (Apache-2.0) would be the GitOps-native alternative.
 * **`argocd/` is a kustomize overlay; the charts stay Helm.** Helm packages
   *applications* — templated, versioned, pulled from OCI, schema-validated,
   signed. `argocd/` is not an application: it is a set of literal objects
   sharing one policy, so it uses kustomize instead of being templated.
   `kustomization.yaml` is the deploy list — the root app's `path: argocd` has
   no `directory:` filter, so under a plain directory source *any* file left in
-  that folder would ship; now nothing deploys until it is listed, and
+  that folder would ship; with the kustomization nothing deploys until it is
+  listed, and
   `validate.yml` fails if the list and the folder disagree.
   `sync-defaults.patch` holds `destination.server` and the shared `syncPolicy`
-  once instead of nine times. It OVERRIDES rather than backfills, so CI rejects
+  once instead of in every Application. It OVERRIDES rather than backfills, so
+  CI rejects
   any manifest that redeclares a field it owns, and rejects a list inside it
   (kustomize replaces lists on this CRD, which would wipe each app's own
   `syncOptions`). An Application diverges deliberately by carrying
@@ -197,6 +223,24 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
   SBOM attestations; `validate.yml` refuses any reference that does not
   exist or is not signed by that workflow. Actions are pinned to commit SHAs,
   downloaded tools are checksum-verified.
+* **Policy as code, enforced twice** (Aufgabe 5, Kyverno). Kyverno runs in the
+  `policy` namespace (`argocd/infra-kyverno.yaml`); the ClusterPolicies are a
+  chart of this repo (`charts/policies`, synced by `argocd/infra-policies.yaml`
+  one wave after Kyverno and one before the environments). `require-resources`
+  applies to every namespace Kyverno watches and fails open - hygiene must
+  never keep the platform's own pods from being rescheduled. In the
+  application namespaces `require-probes`, `require-labels`,
+  `restrict-images` (the CI registry only, tag or digest, never `latest`) and
+  `verify-image-signatures` (keyless cosign, the identity `validate.yml`
+  checks) fail closed. The admission webhook is the enforcement; the same
+  policies also run in CI through the Kyverno CLI, so a violation surfaces on
+  the PR before it reaches the cluster: the rendered manifests must be
+  admitted and `charts/policies/tests/violations.yaml` rejected exactly as
+  its document names say. Nothing about the protection is operated by hand -
+  ArgoCD self-heals Kyverno and the policies, Kyverno refuses changes to its
+  webhooks from anyone but itself; only the rejection test is a manual step.
+  Reports stay out of ArgoCD's cache; Kyverno's metrics and dashboard join
+  the platform folder. Kyverno: Apache-2.0, CNCF.
 * **Scaling policy lives in `generic-stack`** (Aufgabe 6): `hpa:` / `pdb:`,
   explicit `RollingUpdate` with `maxUnavailable: 0`, `minReadySeconds`,
   hostname anti-affinity per component; this repo sets the thresholds in the
@@ -223,10 +267,10 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
   forever, and the API-server SLO rule sets — the chart's most expensive —
   go with them. Every scrape target is declared by its owner: the environments
   carry their `ServiceMonitor` and `PrometheusRule` (thresholds per overlay)
-  plus `generic-stack` PodMonitors for db and frontend; Traefik, cert-manager
-  and ArgoCD enable their own charts' ServiceMonitors — no selector or port is
-  copied into the monitoring chart, and `validate.yml` renders those charts to
-  prove each monitor selects a Service. Prometheus discovers them only in the
+  plus the `generic-stack` PodMonitor for the frontend; Traefik, cert-manager,
+  Kyverno and ArgoCD enable their own charts' ServiceMonitors — no selector or
+  port is copied into the monitoring chart, and `validate.yml` renders those
+  charts to prove each monitor selects a Service. Prometheus discovers them only in the
   namespaces this platform owns, and the alert route matches the
   `service: user-mgmt-service` label, so the application's alerts reach the
   configured webhook receiver. The webhook URL is a Secret read through
@@ -255,7 +299,8 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
   running the two nodes are roughly 90 % committed: the lever is a third node
   from the autoscaler (`min_nodes`/`max_nodes` in `terraform/`) or
   `s-4vcpu-8gb` nodes (6 GiB allocatable), not smaller requests.
-* **The database is a managed service** (Aufgabe 4). PostgreSQL runs as a
+* **The database is a managed service** (Aufgabe 4, Managed Ressources).
+  PostgreSQL runs as a
   DigitalOcean Managed Database (`terraform/database.tf`: one single-node
   cluster in the DOKS VPC, a database and a login role per environment, a
   firewall that admits only the Kubernetes cluster), so backups, failover and
@@ -270,9 +315,10 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
 * **Blast radius.** The root app does not prune and carries no finalizer;
   infra apps carry no finalizer either — removing a manifest never cascades
   into deleting the load balancer or an environment. ArgoCD is version-pinned
-  and manages itself; the UI is port-forward only, every non-admin identity is
-  read-only until an IdP is wired in.
-* **Load tests run in the cluster, but through the front door** (Aufgabe 2).
+  and manages itself; the UI is port-forward only and every non-admin identity
+  is read-only (no identity provider is configured).
+* **Load tests run in the cluster, but through the front door** (Aufgabe 2,
+  Chaos Testing).
   `loadtest/` is a kustomize directory applied per run - a load test is an
   experiment, not a desired state, so it is deliberately not an ArgoCD
   Application (it is still built and kubeconform-checked by `validate.yml`).
@@ -283,7 +329,8 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
   `charts/monitoring/values.yaml`) and a third dashboard puts them next to
   the server-side view and the HPA; the test account is a Secret created
   out-of-band, like every other secret. k6: AGPL-3.0, Grafana Labs.
-* **The cluster is adopted by Terraform, not recreated** (Aufgabe 3).
+* **The cluster is adopted by Terraform, not recreated** (Aufgabe 3,
+  Terraform).
   `terraform/` imports the DOKS cluster the Doks module creates (import
   block + `-generate-config-out`); `generated.tf` states intent only: no GPU
   plugin blocks, no null attributes, network ids left computed, the
@@ -309,7 +356,7 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
 | Database | managed PostgreSQL: database + role `auth_staging` | managed PostgreSQL: database + role `auth_prod` (same cluster; DigitalOcean daily backups + PITR) |
 | Host | `auth-staging.<lb-ip>.nip.io` | `auth-prod.<lb-ip>.nip.io` |
 | TLS secret | `auth-staging-tls` | `auth-prod-tls` (both Let's Encrypt staging) |
-| Isolation | default-deny in/out, explicit flows, PSA restricted | same |
+| Isolation | default-deny in/out, explicit flows, PSA restricted, Kyverno policies (`charts/policies`) | same |
 | Alert thresholds | 5xx > 10 %, p95 > 2 s, rejected logins > 1/s | 5xx > 2 %, p95 > 0.8 s, rejected logins > 0.2/s |
 
 ## Promotion contract (CI-repo side)
@@ -365,27 +412,35 @@ helm dependency build charts/monitoring-crds
 helm lint charts/monitoring-crds --strict
 helm template infra-monitoring-crds charts/monitoring-crds --namespace monitoring --include-crds
 
+helm lint charts/policies --strict
+helm template policies charts/policies > policies.yaml
+kyverno apply policies.yaml --resource charts/policies/tests/violations.yaml   # fail: 5, one per document
+helm template auth charts/auth-stack --namespace auth-staging \
+  -f charts/auth-stack/values.yaml -f charts/auth-stack/values-staging.yaml \
+  | yq 'select(. != null) | .metadata.namespace = "auth-staging"' > rendered-staging.yaml
+kyverno apply policies.yaml --resource rendered-staging.yaml                    # fail: 0
+
 kustomize build argocd/            # what the root app actually applies
 ```
 
 Same steps run in CI (`validate.yml`) for both environments, plus
 `kubeconform` against the cluster's Kubernetes version, cosign verification
 of every referenced artifact, the operator-release lock between the two
-monitoring charts, the dashboard check (valid JSON, unique uids) and the
+monitoring charts, the dashboard check (valid JSON, unique uids), the
 ServiceMonitor conformance of the platform charts (Traefik, cert-manager,
-ArgoCD rendered with their Applications' values).
+Kyverno, ArgoCD rendered with their Applications' values) and the Kyverno CLI
+over every render (admitted) and the fixture (rejected).
 
-`validate.yml` gates `argocd/` with plain `kustomize`/`yq`/`jq`, so a red run
-reproduces locally by copying the step body out of the workflow. Note that
+`validate.yml` gates `argocd/` with plain `kustomize`/`yq`/`jq` and the Kyverno
+CLI, so a red run reproduces locally by copying the step body out of the
+workflow. Note that
 `kubeconform` runs against both `argocd/` and the kustomize output: the
 directory reports a schema error against the file it lives in, the rendered
 output is what ArgoCD applies and the only place `sync-defaults.patch` is
 visible merged.
 
 Line endings: `.gitattributes` keeps every text file LF in the repository and
-in the working tree on any platform (it overrides `core.autocrlf`); a checkout
-that still holds CRLF copies is refreshed on a clean tree with
-`git rm -r --cached . && git reset --hard`.
+in the working tree on any platform (it overrides `core.autocrlf`).
 
 ## Task mapping (grading)
 
@@ -407,3 +462,4 @@ that still holds CRLF copies is refreshed on a clean tree with
 | 2 Chaos Testing | `loadtest/`: k6 as a Kubernetes Job with `scripts/user-mgmt-service.js` (ramping load on `/api/login` + `/api/me`); k6 metrics via remote write into Prometheus, dashboard `k6 load test` (VUs/RPS/p95 next to server-side rate/latency, HPA desired vs. current, CPU vs. target, requests per backend pod); HPA scale-up/down and availability procedure in `loadtest/README.md` |
 | 3 Terraform IaC | `terraform/`: DigitalOcean provider, `imports.tf` import block, `generated.tf` from `terraform plan -generate-config-out` (cleaned; its header states what is omitted and why), `variables.tf`, token via `DIGITALOCEAN_TOKEN` only, `terraform fmt`/`validate` in `validate.yml`, `plan` empty for the running cluster (`terraform/README.md`) |
 | 4 Managed Ressources | `terraform/database.tf`: DigitalOcean Managed PostgreSQL (cluster in the DOKS VPC, database + login role per environment, firewall for the Kubernetes cluster) provisioned with the DigitalOcean provider, outputs `database` / `database_credentials`; `charts/auth-stack`: db component disabled (no pod, Service or PVC; quota allows none), the backend reads `db-url`/`db-user`/`db-password` from the `auth-stack-secrets` Secret only, schema via the PreSync seed Job (`templates/db-seed-job.yaml`); procedure in `terraform/README.md` and `bootstrap/README.md` step 2 |
+| 5 Kyverno Policy as Code | `argocd/infra-kyverno.yaml`: Kyverno via its Helm chart in the dedicated `policy` namespace (wave -2; ServiceMonitors, dashboard); `charts/policies` + `argocd/infra-policies.yaml`: five ClusterPolicies as code (require-resources, require-probes, require-labels, restrict-images, verify-image-signatures), synced one wave after Kyverno; `charts/policies/tests/violations.yaml`: the deliberately invalid Deployments, rejected by the Kyverno CLI in `validate.yml` (one policy per document) and by the admission webhook on the cluster (`bootstrap/README.md` step 11) |

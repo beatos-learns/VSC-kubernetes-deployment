@@ -1,0 +1,94 @@
+# Kyverno (official chart, Apache-2.0, CNCF): the admission engine behind
+# charts/policies (Aufgabe 5, Kyverno), in its own namespace `policy`. Wave -2 with the
+# other platform pieces: its CRDs and webhook exist before the policies
+# (wave -1) and before everything they judge (wave 0). Reconciled like every
+# other platform app - ArgoCD self-heals it - and Kyverno itself refuses any
+# change to the webhooks it registers that does not come from its own
+# ServiceAccount. No finalizer, like every infra app.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-kyverno
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+    # diff against a server-side dry run, so API-server defaults on the CRDs
+    # do not read as permanent drift
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+spec:
+  project: infra
+  source:
+    repoURL: https://kyverno.github.io/kyverno/
+    chart: kyverno
+    targetRevision: 3.9.1 # Kyverno v1.19.1
+    helm:
+      valuesObject:
+        config:
+          preserve: false # the ConfigMap is ArgoCD's to own, not kept across upgrades
+        features:
+          protectManagedResources:
+            enabled: true # its webhook configurations: writable by Kyverno only
+        # Validate and verifyImages policies only: no generate/mutate-existing
+        # rules (background controller), no cleanup policies. The reports
+        # controller runs the background scans behind the PolicyReports.
+        backgroundController:
+          enabled: false
+        cleanupController:
+          enabled: false
+        webhooksCleanup:
+          enabled: false # helm pre-delete hooks, which ArgoCD ignores anyway
+        # Metrics: the chart's ServiceMonitors, scraped by the cluster
+        # Prometheus (charts/monitoring). Resources: the chart's defaults plus
+        # CPU limits, like every other pod of the platform.
+        admissionController:
+          serviceMonitor:
+            enabled: true
+          initContainer:
+            resources:
+              requests:
+                cpu: 10m
+                memory: 64Mi
+              limits:
+                cpu: 100m
+                memory: 256Mi
+          container:
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+              limits:
+                cpu: 500m
+                memory: 384Mi
+        reportsController:
+          serviceMonitor:
+            enabled: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+        # The chart's own dashboard, next to charts/monitoring's platform ones:
+        # the Grafana sidecar reads ConfigMaps in its namespace only.
+        grafana:
+          enabled: true
+          namespace: monitoring
+          annotations:
+            grafana_folder: platform
+  destination:
+    namespace: policy
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true # CRDs exceed the client-side annotation size limit
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+  ignoreDifferences:
+    # the API server fills in the rules of the chart's aggregated ClusterRoles
+    - group: rbac.authorization.k8s.io
+      kind: ClusterRole
+      managedFieldsManagers:
+        - clusterrole-aggregation-controller

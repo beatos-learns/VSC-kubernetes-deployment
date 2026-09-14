@@ -1033,7 +1033,7 @@ function Initialize-DoksCluster {
     .DESCRIPTION
         Automates the one-time imperative bootstrap documented in bootstrap/README.md.
         After it finishes, the cluster converges on git - ArgoCD pulls; nothing
-        deploys via kubectl/helm anymore.
+        deploys via kubectl/helm from then on.
 
         Steps (in order):
           1. Connect   - point this window at the cluster (-ClusterName), verify access.
@@ -1121,7 +1121,7 @@ function Initialize-DoksCluster {
         Show what would happen to the cluster this window points at, change nothing.
 
     .NOTES
-        Requires doctl, kubectl, and helm on PATH (Test-DoksSetup checks all three).
+        Requires doctl, kubectl, helm and terraform on PATH (Test-DoksSetup checks all four).
         Secrets are generated locally and never written to disk or git.
         'Bootstrap-DoksCluster' is an alias for this command.
 
@@ -1345,13 +1345,14 @@ function Test-DoksSetup {
         $rows.Add([pscustomobject]@{ Check = $Check; Status = $(if ($Ok) { 'OK' } else { 'MISSING' }); Detail = $Detail })
     }
 
-    foreach ($tool in 'doctl', 'kubectl', 'helm') {
+    foreach ($tool in 'doctl', 'kubectl', 'helm', 'terraform') {
         try {
             $path = Get-DoksTool -Name $tool
             $ver = ''
             try {
                 if ($tool -eq 'doctl') { $ver = @(Invoke-Doctl -Arguments @('version'))[0] }
                 elseif ($tool -eq 'helm') { $ver = "helm $(@(Invoke-Helm -Arguments @('version', '--short'))[0])" }
+                elseif ($tool -eq 'terraform') { $ver = @(& $path version)[0] }
                 else {
                     $v = Invoke-Kubectl -Arguments @('version', '--client') -Json
                     if ($v -and $v.clientVersion) { $ver = "kubectl $($v.clientVersion.gitVersion)" }

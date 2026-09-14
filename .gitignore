@@ -10,8 +10,12 @@
 # what the validate workflow renders and downloads; also left behind when the
 # same checks are run locally to reproduce a red PR
 /rendered-*.yaml
+/namespaced-*.yaml
+/policies.yaml
+/policy-report.json
 /kubeconform
 /kustomize
+/kyverno-cli
 /yq
 
 # helm dependency artifacts (vendored on demand via `helm dependency build`)

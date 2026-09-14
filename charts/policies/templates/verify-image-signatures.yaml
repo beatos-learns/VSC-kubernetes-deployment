@@ -1,0 +1,48 @@
+{{/*
+  What validate.yml proves before a promotion merges, enforced again at
+  admission: every application image carries a keyless cosign signature from
+  the CI repo's build workflow (GitHub OIDC identity, Rekor transparency log).
+  Verification only - no digest mutation, so ArgoCD's desired state stays what
+  git says.
+*/}}
+{{- $signer := .Values.images.signer }}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  labels:
+    {{- include "policies.labels" . | nindent 4 }}
+  annotations:
+    policies.kyverno.io/title: Application images signed by the CI workflow
+    policies.kyverno.io/category: Supply chain
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Images from {{ .Values.images.registry }} must carry a keyless cosign
+      signature whose certificate identity is the CI repo's build workflow.
+spec:
+  background: false
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: keyless-by-the-build-workflow
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                {{- toYaml .Values.applicationNamespaces | nindent 16 }}
+      verifyImages:
+        - imageReferences:
+            - "{{ .Values.images.registry }}/*"
+          failureAction: Enforce
+          required: true
+          mutateDigest: false
+          verifyDigest: false
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: {{ $signer.issuer | quote }}
+                    subjectRegExp: {{ $signer.subjectRegExp | quote }}
+                    rekor:
+                      url: {{ $signer.rekorUrl | quote }}

@@ -124,15 +124,15 @@ kube-prometheus-stack:
       externalUrl: http://localhost:9090
 
       # Accepts pushed samples on /api/v1/write: the k6 runner (loadtest/)
-      # streams its client-side metrics here during a load test (Aufgabe 2).
+      # streams its client-side metrics here during a load test (Aufgabe 2, Chaos Testing).
       # The receiver only ingests; it does not add scrape targets.
       enableRemoteWriteReceiver: true
 
       # Nil selectors mean "only what this release rendered". The environments
       # (charts/auth-stack/templates/, generic-stack PodMonitors) and the
-      # platform apps (ArgoCD, Traefik, cert-manager: their charts' own
-      # ServiceMonitors) ship their monitors themselves, so discovery is opened
-      # up - but only to the namespaces this platform owns.
+      # platform apps (ArgoCD, Traefik, cert-manager, Kyverno: their charts'
+      # own ServiceMonitors) ship their monitors themselves, so discovery is
+      # opened up - but only to the namespaces this platform owns.
       serviceMonitorSelectorNilUsesHelmValues: false
       podMonitorSelectorNilUsesHelmValues: false
       probeSelectorNilUsesHelmValues: false
@@ -149,6 +149,7 @@ kube-prometheus-stack:
               - argocd
               - traefik
               - cert-manager
+              - policy
       podMonitorNamespaceSelector: *monitoredNamespaces
       ruleNamespaceSelector: *monitoredNamespaces
 
