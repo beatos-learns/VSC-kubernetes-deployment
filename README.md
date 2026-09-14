@@ -75,7 +75,8 @@ charts/monitoring/          wrapper chart:
   values.yaml               the monitoring stack's own configuration: scrape
                             targets, retention + storage, Alertmanager routing
                             and receiver, Grafana provisioning
-  files/dashboards/         the two dashboards of this repo (as code)
+  files/dashboards/         the three dashboards of this repo (as code):
+                            user-mgmt-service, auth-stack/Kubernetes, k6 load test
   templates/dashboards.yaml renders them into sidecar-labelled ConfigMaps
 charts/auth-stack/          wrapper chart:
   Chart.yaml                pins generic-stack (OCI dependency from GHCR)
@@ -96,6 +97,14 @@ Doks/                       PowerShell module: create/connect/delete the
                             throwaway DOKS cluster and run the bootstrap
                             (New-DoksCluster | Bootstrap-DoksCluster);
                             see Doks/README.md
+terraform/                  the DOKS cluster as code (Aufgabe 3): DigitalOcean
+                            provider, import block for the existing cluster,
+                            the generated-then-cleaned resource, variables;
+                            token via environment only; see terraform/README.md
+loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
+                            namespace + policy, script ConfigMap, Job; applied
+                            per run, results in Prometheus/Grafana; see
+                            loadtest/README.md
 .github/workflows/
   validate.yml              PR/main gate: helm lint + template + kubeconform
                             for both env overlays, the issuer chart, the
@@ -105,7 +114,9 @@ Doks/                       PowerShell module: create/connect/delete the
                             every referenced image and the chart dependency
                             must exist in GHCR and carry a cosign signature
                             from the CI repo's workflow; uploads the rendered
-                            env manifests (debug aid)
+                            env manifests (debug aid); builds loadtest/ with
+                            kustomize and kubeconform-checks it; runs
+                            terraform fmt/init/validate (no credentials)
 ```
 
 ## Design decisions
@@ -203,6 +214,26 @@ Doks/                       PowerShell module: create/connect/delete the
   never pruned or cascade-deleted. ArgoCD is version-pinned
   and manages itself; the UI is port-forward only, every non-admin identity is
   read-only until an IdP is wired in.
+* **Load tests run in the cluster, but through the front door** (Aufgabe 2).
+  `loadtest/` is a kustomize directory applied per run - a load test is an
+  experiment, not a desired state, so it is deliberately not an ArgoCD
+  Application (it is still built and kubeconform-checked by `validate.yml`).
+  k6 runs as a restricted, default-deny Job and targets the environment's
+  public host, so the load balancer, Traefik, the frontend's `/api` proxy and
+  the Service round-robin over the backend replicas are all under test. Its
+  metrics go into the one Prometheus via remote write (receiver enabled in
+  `charts/monitoring/values.yaml`) and a third dashboard puts them next to
+  the server-side view and the HPA; the test account is a Secret created
+  out-of-band, like every other secret. k6: AGPL-3.0, Grafana Labs.
+* **The cluster is adopted by Terraform, not recreated** (Aufgabe 3).
+  `terraform/` imports the DOKS cluster the Doks module created (import
+  block, `-generate-config-out`, then cleaned: the mutually exclusive GPU
+  plugin blocks, null attributes and account-specific network ids are gone,
+  the autoscaler-owned node count is ignored, every literal is a variable).
+  `plan` on `main` is empty for the running cluster; a version or pool change
+  is a reviewed diff. The API token stays an environment variable, state
+  stays local until a second operator needs it, and the load balancer and
+  volumes stay with Kubernetes - one owner per object.
 
 ## Environments
 
@@ -298,3 +329,11 @@ visible merged.
 | 5 Namespaces | `values-*.yaml` overlays, `templates/resourcequota.yaml`, `limitrange.yaml`, `networkpolicy.yaml`, PSA labels in `argocd/app-*.yaml` |
 | 6 Scaling | HPA/PDB/RollingUpdate/anti-affinity via `generic-stack`, thresholds in the overlays; liveness/readiness/startup probes on every component; Traefik round-robins the Ingress over ready endpoints only; TLS via cert-manager; metrics-server infra app |
 | 7 Monitoring | kube-prometheus-stack in ns `monitoring` via `argocd/infra-monitoring.yaml` + `charts/monitoring` (its `values.yaml` is the whole configuration); per-pod CPU/memory from the kubelet + kube-state-metrics; `charts/auth-stack/templates/servicemonitor.yaml` scrapes the backend's admin port (request rate, response time, error rate); `prometheusrule.yaml` defines the alerts and the Alertmanager route in `charts/monitoring/values.yaml` forwards them to the webhook receiver; two dashboards in `charts/monitoring/files/dashboards/`; verification steps in `bootstrap/README.md` step 10 |
+
+## Task mapping (Tooling block, VSC_Observability)
+
+| Aufgabe | Where |
+|---|---|
+| 1 Observability | see "7 Monitoring" above: kube-prometheus-stack in ns `monitoring`, per-pod CPU/memory, backend ServiceMonitor (request rate, response time, error rate), two dashboards, PrometheusRule + Alertmanager webhook, all in `charts/monitoring/values.yaml` |
+| 2 Chaos Testing | `loadtest/`: k6 as a Kubernetes Job with `scripts/user-mgmt-service.js` (ramping load on `/api/login` + `/api/me`); k6 metrics via remote write into Prometheus, dashboard `k6 load test` (VUs/RPS/p95 next to server-side rate/latency, HPA desired vs. current, CPU vs. target, requests per backend pod); HPA scale-up/down and availability procedure in `loadtest/README.md` |
+| 3 Terraform IaC | `terraform/`: DigitalOcean provider, `imports.tf` import block, `generated.tf` from `terraform plan -generate-config-out` (cleaned, header lists the edits), `variables.tf`, token via `DIGITALOCEAN_TOKEN` only, `terraform fmt`/`validate` in `validate.yml`, `plan` empty for the running cluster (`terraform/README.md`) |

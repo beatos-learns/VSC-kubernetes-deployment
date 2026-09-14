@@ -1,0 +1,11 @@
+# Own namespace, restricted Pod Security like the environments: the k6 runner
+# is an unprivileged pod and must not be able to become anything else.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loadtest
+  labels:
+    app.kubernetes.io/part-of: loadtest
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

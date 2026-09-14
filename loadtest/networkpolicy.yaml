@@ -1,0 +1,76 @@
+# Default-deny like the environments, then exactly the flows a test run needs:
+# DNS, HTTPS out (the public load balancer host of the environment under test -
+# the request takes the same path as a user's, through Traefik), the Traefik
+# pods themselves (DOKS short-circuits a pod's traffic to the load balancer IP
+# straight to the Service behind it, so the policy sees the Traefik pod as the
+# destination) and Prometheus' remote-write receiver for the k6 metrics.
+# No ingress: nothing talks to the runner.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: k6-default-deny
+  labels:
+    app.kubernetes.io/name: k6
+    app.kubernetes.io/part-of: loadtest
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: k6-egress
+  labels:
+    app.kubernetes.io/name: k6
+    app.kubernetes.io/part-of: loadtest
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: k6
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 8443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090

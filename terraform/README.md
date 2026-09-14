@@ -1,0 +1,105 @@
+# Terraform (Aufgabe 3, Infrastructure as Code)
+
+The DOKS cluster the Doks module created is under Terraform management **as
+imported infrastructure** - nothing here recreates it. `terraform plan` on
+`main` shows no changes for the running cluster; a change to a variable is a
+reviewed change to the cluster.
+
+```
+terraform/
+  versions.tf          Terraform >= 1.10, provider digitalocean/digitalocean ~> 2.100
+  providers.tf         provider block; token from the environment, never from git
+  variables.tf         every reusable value (name, region, version, node pool, tags, …)
+  terraform.tfvars     the concrete cluster: id, name, version (nothing sensitive)
+  imports.tf           import block that adopts the existing cluster into state
+  generated.tf         the resource - generated from the live cluster, then cleaned
+  outputs.tf           id, endpoint, version, node pool
+  .terraform.lock.hcl  provider build pinned (commit it)
+```
+
+State is local (`terraform.tfstate`, git-ignored): one cluster, one operator.
+Move it to a backend (DigitalOcean Spaces is S3-compatible) before a second
+person runs `apply`.
+
+## Token
+
+The DigitalOcean API token is the one the Doks module stores in the Windows
+Credential Manager. Export it for the shell you run Terraform in - it is not
+a tfvar and no file in this directory may contain it:
+
+```powershell
+Import-Module .\Doks
+$env:DIGITALOCEAN_TOKEN = & (Get-Module Doks) { (Read-DoksStoredToken).Token }
+```
+
+```sh
+export DIGITALOCEAN_TOKEN=...            # bash; or TF_VAR_do_token for -var do_token
+```
+
+`.gitignore` excludes `*.auto.tfvars` and `secrets.tfvars` so a local token
+file cannot be committed by accident; `terraform.tfvars` is committed and
+therefore holds only the cluster's identity.
+
+## How the cluster was adopted (done once, reproducible)
+
+```sh
+cd terraform
+terraform init
+terraform plan -generate-config-out=generated.tf   # with `provider = digitalocean` in the import block, see imports.tf
+```
+
+The generated file was then **analysed and cleaned** - the header of
+`generated.tf` lists every edit: the six mutually exclusive GPU/RDMA/registry
+plugin blocks (all `enabled = false`, rejected by the provider when present
+together) and the null attributes went, the account-specific network ids are
+left computed, the autoscaler-owned `node_count` is ignored in plans, and
+every literal became a variable. Then:
+
+```sh
+terraform fmt -check -recursive
+terraform validate
+terraform plan        # Plan: 1 to import, 0 to add, 0 to change, 0 to destroy.
+terraform apply       # writes the import into state - no infrastructure changes
+terraform plan        # No changes. Your infrastructure matches the configuration.
+```
+
+The import block stays in `imports.tf`: it is a no-op once the resource is in
+state and documents where the cluster came from.
+
+## Day-to-day
+
+```sh
+terraform -chdir=terraform plan              # drift check; must be empty on main
+terraform -chdir=terraform apply             # after a reviewed variable change
+terraform -chdir=terraform output            # endpoint, version, node pool
+```
+
+Typical changes and what they do:
+
+| Change | Effect |
+|---|---|
+| `kubernetes_version` | control-plane upgrade (surge upgrade: nodes are replaced one by one, the pool never shrinks) |
+| `max_nodes` / `min_nodes` | autoscaler bounds; the live count between them is the autoscaler's and ignored |
+| `node_size` | DigitalOcean replaces the node pool - plan it, it drains the workloads |
+| `tags` | keep `doks-VSC-deploy`: `Remove-DoksCluster` refuses to delete untagged clusters |
+
+Not managed here on purpose: the load balancer and the block-storage volumes.
+They are created by Kubernetes (the Traefik Service, the PVCs) and owned by
+the GitOps side; importing them would make two systems responsible for one
+object. `ha = true` is a fixed fact of this cluster (DigitalOcean cannot
+switch it off), so it is not a variable.
+
+## CI
+
+`validate.yml` runs `terraform fmt -check`, `terraform init -backend=false`
+and `terraform validate` on every PR - no token needed, no plan against the
+account from CI. The drift check (`plan`) is a local, authenticated step.
+
+## Relation to the Doks module
+
+`New-DoksCluster` still creates throwaway clusters imperatively (its defaults
+in `Doks/Doks.defaults.psd1` are the variable defaults here). For a cluster
+that is going to stay, adopt it: put its id and version into
+`terraform.tfvars`, `terraform apply`. `Remove-DoksCluster` bypasses
+Terraform - run `terraform state rm digitalocean_kubernetes_cluster.this`
+afterwards, or delete through Terraform in the first place.

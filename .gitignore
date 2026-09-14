@@ -19,3 +19,14 @@
 /charts/monitoring/charts/
 *.tgz
 *.pdf
+
+# terraform/ - state and provider binaries stay local; .terraform.lock.hcl is
+# committed on purpose (pins the provider build), *.tfvars only when they hold
+# nothing sensitive (the API token is an environment variable, never a tfvar)
+/terraform/.terraform/
+/terraform/*.tfstate
+/terraform/*.tfstate.*
+/terraform/*.tfplan
+/terraform/crash.log
+/terraform/*.auto.tfvars
+/terraform/secrets.tfvars
