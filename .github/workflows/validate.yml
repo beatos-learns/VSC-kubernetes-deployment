@@ -187,7 +187,7 @@ jobs:
       - name: Every manifest in argocd/ is wired into the kustomization
         # The root app renders argocd/ through kustomize, so a file that is
         # neither in resources: nor a patch is silently not deployed and not
-        # validated - the directory source used to pick it up for free.
+        # validated, where a plain directory source would pick it up for free.
         # Assumes flat filenames in resources: (no subdirectories, no remote bases).
         run: |
           set -euo pipefail

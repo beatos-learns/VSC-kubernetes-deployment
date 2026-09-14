@@ -200,12 +200,6 @@ therefore needs a migration on existing volumes (a one-off Job with `psql`
 like the restore Job) **and** the seed SQL updated for fresh ones — the
 overlays' tag bump and the migration belong in the same PR.
 
-Existing clusters, once: the backend Deployment was applied with a static
-`replicas` before the HPA took over. Strip it from the last-applied state so
-the first HPA-managed sync does not scale to 1 in between:
-`kubectl -n <ns> apply edit-last-applied deployment/auth-backend` (delete
-`spec.replicas`).
-
 ## 10. Monitoring
 
 `infra-monitoring` installs kube-prometheus-stack from `charts/monitoring`
@@ -261,7 +255,7 @@ rules (OOM kills, unschedulable pods, Traefik, certificates, ArgoCD) are the
 and take the same route.
 
 When something "is low on resources", open **Platform - cluster capacity**
-first: a 4 GB DOKS node leaves 2.5 GiB to pods, and the dashboard shows per
+first: a 4 GB DOKS node leaves about 2.9 GiB to pods, and the dashboard shows per
 node what is allocatable, requested and used, which containers exceed their
 request or are throttled, and OOM kills. A pod that stays Pending is the
 autoscaler's cue (`min_nodes`/`max_nodes` in `terraform/`).

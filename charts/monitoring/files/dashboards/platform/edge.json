@@ -284,7 +284,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "editorMode": "code",
-          "expr": "min((certmanager_certificate_expiration_timestamp_seconds - time()) / 86400)",
+          "expr": "min(((certmanager_certificate_expiration_timestamp_seconds > 0) - time()) / 86400)",
           "legendFormat": "days",
           "range": true,
           "refId": "A"
@@ -569,7 +569,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "editorMode": "code",
-          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"traefik\", container=\"traefik\"}[5m]))",
+          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=\"traefik\", container!=\"\"}[5m]))",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -577,7 +577,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "editorMode": "code",
-          "expr": "max(kube_pod_container_resource_limits{namespace=\"traefik\", container=\"traefik\", resource=\"cpu\"})",
+          "expr": "max(kube_pod_container_resource_limits{namespace=\"traefik\", resource=\"cpu\"})",
           "legendFormat": "limit",
           "range": true,
           "refId": "B"
@@ -624,7 +624,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "editorMode": "code",
-          "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"traefik\", container=\"traefik\"})",
+          "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=\"traefik\", container!=\"\"})",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -632,7 +632,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "editorMode": "code",
-          "expr": "max(kube_pod_container_resource_limits{namespace=\"traefik\", container=\"traefik\", resource=\"memory\"})",
+          "expr": "max(kube_pod_container_resource_limits{namespace=\"traefik\", resource=\"memory\"})",
           "legendFormat": "limit",
           "range": true,
           "refId": "B"
@@ -719,7 +719,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "editorMode": "code",
-          "expr": "(certmanager_certificate_expiration_timestamp_seconds - time()) / 86400",
+          "expr": "((certmanager_certificate_expiration_timestamp_seconds > 0) - time()) / 86400",
           "legendFormat": "{{namespace}}/{{name}}",
           "range": true,
           "refId": "A"

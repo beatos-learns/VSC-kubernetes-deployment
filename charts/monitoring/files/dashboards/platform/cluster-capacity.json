@@ -88,7 +88,7 @@
       "id": 2,
       "type": "stat",
       "title": "Memory requested",
-      "description": "Requests of running and pending pods as a share of the allocatable memory of all nodes (DOKS: 2.5 GiB of a 4 GB node). Above ~90 % the next pod waits for the autoscaler.",
+      "description": "Requests of running and pending pods as a share of the allocatable memory of all nodes (DOKS: about 2.9 GiB of a 4 GB node). Above ~90 % the next pod waits for the autoscaler.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
       "fieldConfig": {

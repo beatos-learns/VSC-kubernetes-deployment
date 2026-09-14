@@ -50,9 +50,10 @@ EOF
 
 `job.yaml` carries the knobs as environment variables: `TARGET_URL` (the
 environment's ingress host from `charts/auth-stack/values-*.yaml`) and
-`PEAK_VUS` (virtual users at the plateau, default 5 - see "Findings" below
-for why). Change them in the
-file or on the fly:
+`PEAK_VUS` (virtual users at the plateau; default 5: a backend pod with the
+500m CPU limit serves ~2 bcrypt logins/s, so 5 keeps staging's 1-2 replicas
+inside the thresholds, ~8 breaches the login p95 and ~20 starves the liveness
+probe of the throttled JVM). Change them in the file or on the fly:
 
 ```sh
 kubectl apply -k loadtest/
@@ -121,42 +122,6 @@ The push needs Prometheus' remote-write receiver, which
 `charts/monitoring/values.yaml` enables (`enableRemoteWriteReceiver`).
 k6 keeps running if the push fails - the run is still judged by its own
 thresholds, only the k6 panels stay empty.
-
-## Findings on this cluster (2026-09-14, staging, backend 100m request / 500m limit CPU)
-
-Three runs against `auth-staging` with the profile above, HPA 1-2 replicas:
-
-| Peak VUs | Result | What happened |
-|---|---|---|
-| 5 (default) | **Complete** - login p95 1.58 s, `/api/me` p95 78 ms, 0.05 % failed, 100 % checks | HPA 1 → 2 during the second stage (CPU 168-411 % of request), the new pod took traffic with 0 restarts; back to 1 replica ~5 min after the run |
-| 8 | Failed - login p95 2.99 s (threshold 2 s), 0.04 % failed, 100 % checks | still available, but both pods saturated: ~2.3 logins/s is all two pods deliver |
-| 30 | Failed - 503/500 from 20 VUs on | both backend pods CrashLoopBackOff: the CPU-throttled JVM misses the liveness probe (2 s timeout), kubelet kills it, the outage cascades |
-
-What that says about the platform, not about k6:
-
-* **Capacity is CPU-bound by bcrypt.** One login costs ~250 ms of CPU; with a
-  500m limit a backend pod serves ~2 logins/s before latency climbs. The HPA
-  target (70 % of a 100m *request*) trips at 70m, so the autoscaler reaches
-  its maximum long before a pod reaches its limit - scaling works, but the
-  ceiling is `maxReplicas × 2 logins/s`. Raising the CPU request (so the
-  target means something) and the limit (so a pod can absorb a burst) in
-  `charts/auth-stack/values.yaml` is the lever; prod's 2-5 replicas give it
-  more headroom than staging's 1-2.
-* **Overload kills instead of degrading.** The liveness probe shares the
-  admin port with everything else; under CPU throttling it times out and the
-  pod is restarted while it is merely slow. That belongs in `generic-stack`
-  (CI repo): a longer liveness timeout/failure threshold, or a probe that does
-  not compete with request handling.
-* **The server-side panels stay empty.** The backend image's admin `/metrics`
-  currently exposes only `build_info` and `health_check_up` - no Micrometer
-  `http_server_requests_seconds_*` - so the user-mgmt-service dashboard's
-  request/latency/error panels and the four PrometheusRule alerts have no
-  data although `up` is 1 (CI repo, `src/Backend/patches/`). The k6 side, the
-  HPA and the CPU panels do not depend on it.
-* **The first user cannot log in.** JWT creation fails for any user that
-  holds a role (`SimpleGrantedAuthority` is not serialisable) - the account
-  the seed SQL promotes to ADMIN gets 401 on every login. That is why the
-  k6 account must stay role-less (section 1). Application bug, user_mgmt_service.
 
 ## What the run exercises
 

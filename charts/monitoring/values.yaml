@@ -7,7 +7,7 @@
 #
 # Cluster context: DOKS - managed control plane (no kube-scheduler /
 # controller-manager / etcd endpoints), Cilium instead of kube-proxy,
-# 2 x s-2vcpu-4gb nodes (2.5 GiB allocatable each), do-block-storage volumes.
+# 2 x s-2vcpu-4gb nodes (about 2.9 GiB allocatable each), do-block-storage volumes.
 # ---------------------------------------------------------------------------
 
 # Sidecar label for the dashboards in files/dashboards/; the sub-directory is
@@ -193,10 +193,11 @@ kube-prometheus-stack:
         repeat_interval: 12h
         receiver: webhook
         routes:
-          # The stack's own heartbeat - it fires permanently by design.
+          # The stack's heartbeat and the info-alert inhibitor: both fire
+          # permanently by design, neither is a notification.
           - receiver: "null"
             matchers:
-              - alertname = "Watchdog"
+              - alertname =~ "Watchdog|InfoInhibitor"
           # The application's alerts (charts/auth-stack PrometheusRule):
           # grouped per environment and severity, repeated hourly while firing.
           - receiver: webhook
@@ -295,7 +296,7 @@ kube-prometheus-stack:
     testFramework:
       enabled: false
     # ~40 provisioned dashboards (the chart's set plus files/dashboards/) are
-    # loaded at start; the old 384Mi limit was OOM territory for that.
+    # loaded at start: ~360Mi idle, hence the headroom.
     resources:
       requests:
         cpu: 100m
@@ -314,12 +315,14 @@ kube-prometheus-stack:
         memory: 192Mi
 
   prometheus-node-exporter:
+    # Each scrape runs the collectors in parallel; a 100m limit throttles a third
+    # of all CPU periods (CPUThrottlingHigh) for milliseconds of real work.
     resources:
       requests:
         cpu: 20m
         memory: 32Mi
       limits:
-        cpu: 100m
+        cpu: 250m
         memory: 64Mi
 
   # -------------------------------------------------------------------------
@@ -413,7 +416,7 @@ kube-prometheus-stack:
                   usually the HTTP-01 challenge is not reachable through the ingress
                   (host, DNS, NetworkPolicy) or the ACME account is rate-limited.
             - alert: CertManagerCertificateExpiringSoon
-              expr: (certmanager_certificate_expiration_timestamp_seconds - time()) / 86400 < 14
+              expr: ((certmanager_certificate_expiration_timestamp_seconds > 0) - time()) / 86400 < 14
               for: 1h
               labels:
                 severity: warning
