@@ -3,18 +3,18 @@
 # stack is configured: no `--set`, no changes saved in the Grafana UI.
 # Everything under `kube-prometheus-stack:` is passed to the dependency chart;
 # the `dashboards:` block drives this wrapper's own template, which turns
-# files/dashboards/*.json into sidecar-labelled ConfigMaps.
+# files/dashboards/<folder>/*.json into sidecar-labelled ConfigMaps.
 #
 # Cluster context: DOKS - managed control plane (no kube-scheduler /
 # controller-manager / etcd endpoints), Cilium instead of kube-proxy,
-# 2 x s-2vcpu-4gb nodes, do-block-storage volumes.
+# 2 x s-2vcpu-4gb nodes (2.5 GiB allocatable each), do-block-storage volumes.
 # ---------------------------------------------------------------------------
 
-# Grafana folder and sidecar label for the dashboards in files/dashboards/
-# (the two auth-stack dashboards and the k6 load-test dashboard, Aufgabe 2);
-# label/labelValue must match kube-prometheus-stack.grafana.sidecar.dashboards.
+# Sidecar label for the dashboards in files/dashboards/; the sub-directory is
+# the Grafana folder (auth-stack: the application and its load test, platform:
+# the cluster and the infrastructure apps). label/labelValue must match
+# kube-prometheus-stack.grafana.sidecar.dashboards.
 dashboards:
-  folder: auth-stack
   label: grafana_dashboard
   labelValue: "1"
 
@@ -23,8 +23,10 @@ kube-prometheus-stack:
   # the operator's StatefulSet names would otherwise eat the 63-char budget.
   cleanPrometheusOperatorObjectNames: true
 
+  # The CRDs come from charts/monitoring-crds (argocd/infra-monitoring-crds.yaml,
+  # wave -3), pinned to the same operator release - validate.yml checks that.
   crds:
-    enabled: true
+    enabled: false
 
   # -------------------------------------------------------------------------
   # Scrape targets
@@ -64,6 +66,19 @@ kube-prometheus-stack:
       kubeSchedulerAlerting: false
       kubeSchedulerRecording: false
       windows: false
+      # The API-server SLO machinery (burn rates over up to three days of the
+      # request-duration histogram) is the most expensive rule set in the chart,
+      # and DigitalOcean operates that API server - nothing here can act on it.
+      kubeApiserverAvailability: false
+      kubeApiserverBurnrate: false
+      kubeApiserverSlos: false
+    disabled:
+      # Both assume N-1 node tolerance and fire as soon as requests exceed one
+      # node - on a two-node pool that is permanent. The autoscaler replaces a
+      # lost node; capacity lives on the "Platform - cluster capacity" dashboard
+      # and in PodUnschedulable (additionalPrometheusRulesMap below).
+      KubeCPUOvercommit: true
+      KubeMemoryOvercommit: true
 
   # -------------------------------------------------------------------------
   # Operator
@@ -78,10 +93,20 @@ kube-prometheus-stack:
     resources:
       requests:
         cpu: 50m
-        memory: 64Mi
+        memory: 128Mi
       limits:
         cpu: 200m
         memory: 256Mi
+    # The config-reloader sidecar of Prometheus and Alertmanager (unbounded
+    # unless set here).
+    prometheusConfigReloader:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
 
   # -------------------------------------------------------------------------
   # Prometheus
@@ -104,9 +129,10 @@ kube-prometheus-stack:
       enableRemoteWriteReceiver: true
 
       # Nil selectors mean "only what this release rendered". The environments
-      # ship their own ServiceMonitor and PrometheusRule
-      # (charts/auth-stack/templates/), so discovery is opened up - but only to
-      # the namespaces this platform owns.
+      # (charts/auth-stack/templates/, generic-stack PodMonitors) and the
+      # platform apps (ArgoCD, Traefik, cert-manager: their charts' own
+      # ServiceMonitors) ship their monitors themselves, so discovery is opened
+      # up - but only to the namespaces this platform owns.
       serviceMonitorSelectorNilUsesHelmValues: false
       podMonitorSelectorNilUsesHelmValues: false
       probeSelectorNilUsesHelmValues: false
@@ -120,6 +146,9 @@ kube-prometheus-stack:
               - monitoring
               - auth-staging
               - auth-prod
+              - argocd
+              - traefik
+              - cert-manager
       podMonitorNamespaceSelector: *monitoredNamespaces
       ruleNamespaceSelector: *monitoredNamespaces
 
@@ -133,13 +162,17 @@ kube-prometheus-stack:
               requests:
                 storage: 10Gi
 
+      # The request covers the working set of this cluster's head (tens of
+      # thousands of series), so Prometheus is not the first pod evicted under
+      # node pressure; the limit leaves room for WAL replay, compaction and a
+      # load test's remote-write burst.
       resources:
         requests:
-          cpu: 200m
-          memory: 768Mi
+          cpu: 250m
+          memory: 1Gi
         limits:
           cpu: "1"
-          memory: 1536Mi
+          memory: 2Gi
 
   # -------------------------------------------------------------------------
   # Alertmanager
@@ -215,8 +248,8 @@ kube-prometheus-stack:
                 storage: 1Gi
       resources:
         requests:
-          cpu: 10m
-          memory: 48Mi
+          cpu: 25m
+          memory: 64Mi
         limits:
           cpu: 100m
           memory: 128Mi
@@ -239,6 +272,14 @@ kube-prometheus-stack:
     defaultDashboardsEnabled: true
     defaultDashboardsTimezone: Europe/Zurich
     sidecar:
+      # Both sidecars (dashboards, datasources) - unbounded unless set here.
+      resources:
+        requests:
+          cpu: 20m
+          memory: 64Mi
+        limits:
+          cpu: 100m
+          memory: 128Mi
       dashboards:
         enabled: true
         folderAnnotation: grafana_folder
@@ -253,13 +294,15 @@ kube-prometheus-stack:
         root_url: http://localhost:3000/
     testFramework:
       enabled: false
+    # ~40 provisioned dashboards (the chart's set plus files/dashboards/) are
+    # loaded at start; the old 384Mi limit was OOM territory for that.
     resources:
       requests:
-        cpu: 50m
-        memory: 128Mi
+        cpu: 100m
+        memory: 256Mi
       limits:
-        cpu: 300m
-        memory: 384Mi
+        cpu: 500m
+        memory: 512Mi
 
   kube-state-metrics:
     resources:
@@ -278,3 +321,170 @@ kube-prometheus-stack:
       limits:
         cpu: 100m
         memory: 64Mi
+
+  # -------------------------------------------------------------------------
+  # Platform alerts (PrometheusRule monitoring-kube-prometheus-platform)
+  # -------------------------------------------------------------------------
+  # What counts as broken for the cluster and the infrastructure apps; the
+  # environments carry their own rules (charts/auth-stack). Delivered through
+  # the default route above.
+  additionalPrometheusRulesMap:
+    platform:
+      groups:
+        - name: platform-capacity
+          rules:
+            - alert: ContainerOOMKilled
+              expr: >-
+                increase(kube_pod_container_status_restarts_total[15m]) > 0
+                and on (namespace, pod, container)
+                kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1
+              for: 1m
+              labels:
+                severity: warning
+              annotations:
+                summary: "{{ $labels.namespace }}/{{ $labels.pod }} ({{ $labels.container }}) was OOM-killed"
+                description: >-
+                  The container restarted after exceeding its memory limit.
+                  Raise the limit where the workload is sized (charts/auth-stack
+                  values, charts/monitoring/values.yaml, argocd/infra-*.yaml or
+                  bootstrap/argocd-values.yaml) - or find the leak.
+            - alert: PodUnschedulable
+              expr: sum by (namespace, pod) (kube_pod_status_unschedulable) > 0
+              for: 10m
+              labels:
+                severity: warning
+              annotations:
+                summary: "{{ $labels.namespace }}/{{ $labels.pod }} has no node to run on"
+                description: >-
+                  No node has had room for the pod's requests for 10 minutes.
+                  The autoscaler adds nodes up to max_nodes (terraform/variables.tf);
+                  if it is at the limit the platform has outgrown the pool - see
+                  the "Platform - cluster capacity" dashboard.
+        - name: platform-edge
+          rules:
+            - alert: TraefikDown
+              expr: >-
+                sum(up{job="traefik"}) == 0
+                or absent(up{job="traefik"})
+              for: 5m
+              labels:
+                severity: critical
+              annotations:
+                summary: no Traefik pod answers the metrics scrape
+                description: >-
+                  The ingress controller is down or no longer scraped: every
+                  environment's host is unreachable. kubectl -n traefik get pods.
+            - alert: TraefikHighServerErrorRate
+              expr: >-
+                100 * sum by (service) (rate(traefik_service_requests_total{code=~"5.."}[5m]))
+                / sum by (service) (rate(traefik_service_requests_total[5m])) > 5
+                and sum by (service) (rate(traefik_service_requests_total[5m])) > 0.1
+              for: 10m
+              labels:
+                severity: warning
+              annotations:
+                summary: "{{ $labels.service }} answers {{ $value | printf \"%.1f\" }} % of requests with 5xx (seen at the edge)"
+                description: >-
+                  The edge sees what the frontend and its /api proxy return. If
+                  the user-mgmt-service dashboard shows a clean backend, the
+                  frontend pods or the proxy path are failing.
+            - alert: CertManagerDown
+              expr: >-
+                sum(up{job="cert-manager"}) == 0
+                or absent(up{job="cert-manager"})
+              for: 10m
+              labels:
+                severity: critical
+              annotations:
+                summary: cert-manager is down or no longer scraped
+                description: >-
+                  No certificate is renewed while it is down; issued certificates
+                  stay valid until they expire (CertManagerCertificateExpiringSoon).
+                  kubectl -n cert-manager get pods.
+            - alert: CertManagerCertificateNotReady
+              expr: certmanager_certificate_ready_status{condition="True"} == 0
+              for: 30m
+              labels:
+                severity: warning
+              annotations:
+                summary: "certificate {{ $labels.namespace }}/{{ $labels.name }} is not Ready"
+                description: >-
+                  kubectl -n {{ $labels.namespace }} describe certificate {{ $labels.name }}:
+                  usually the HTTP-01 challenge is not reachable through the ingress
+                  (host, DNS, NetworkPolicy) or the ACME account is rate-limited.
+            - alert: CertManagerCertificateExpiringSoon
+              expr: (certmanager_certificate_expiration_timestamp_seconds - time()) / 86400 < 14
+              for: 1h
+              labels:
+                severity: warning
+              annotations:
+                summary: "certificate {{ $labels.namespace }}/{{ $labels.name }} expires in {{ $value | printf \"%.0f\" }} days"
+                description: >-
+                  cert-manager renews 30 days before expiry; this close to it the
+                  renewal has been failing - see CertManagerCertificateNotReady
+                  and the Certificate's conditions.
+            - alert: CertManagerAcmeRateLimited
+              expr: sum by (host) (increase(certmanager_http_acme_client_request_count{status="429"}[10m])) > 0
+              labels:
+                severity: warning
+              annotations:
+                summary: "the ACME server {{ $labels.host }} is rate-limiting this cluster"
+                description: >-
+                  Let's Encrypt answered 429. The staging limits are generous, so
+                  this is usually a challenge loop - stop it before the account
+                  is locked out for a week.
+        - name: platform-gitops
+          rules:
+            - alert: ArgoCDDown
+              expr: >-
+                sum(up{job="argocd-application-controller-metrics"}) == 0
+                or absent(up{job="argocd-application-controller-metrics"})
+              for: 10m
+              labels:
+                severity: critical
+              annotations:
+                summary: the ArgoCD application controller is down or no longer scraped
+                description: >-
+                  Nothing reconciles: merged changes stay undeployed until it is
+                  back. kubectl -n argocd get pods.
+            - alert: ArgoCDAppSyncFailed
+              expr: sum by (name, project, phase) (increase(argocd_app_sync_total{phase=~"Error|Failed"}[10m])) > 0
+              labels:
+                severity: warning
+              annotations:
+                summary: "ArgoCD application {{ $labels.name }} ended a sync in {{ $labels.phase }}"
+                description: >-
+                  The operation's message is in the ArgoCD UI (bootstrap/README.md
+                  step 5) or `argocd app get {{ $labels.name }}`. Auto-sync does not
+                  retry a revision that failed - fix forward with a new commit.
+            - alert: ArgoCDAppOutOfSync
+              expr: argocd_app_info{sync_status="OutOfSync"} == 1
+              for: 30m
+              labels:
+                severity: warning
+              annotations:
+                summary: "ArgoCD application {{ $labels.name }} has been OutOfSync for 30 minutes"
+                description: >-
+                  Every Application auto-syncs (argocd/sync-defaults.patch), so a
+                  lasting OutOfSync means the sync fails or is blocked - see
+                  ArgoCDAppSyncFailed and the application's operation state.
+            - alert: ArgoCDAppUnhealthy
+              expr: argocd_app_info{health_status=~"Degraded|Missing|Unknown"} == 1
+              for: 15m
+              labels:
+                severity: warning
+              annotations:
+                summary: "ArgoCD application {{ $labels.name }} is {{ $labels.health_status }}"
+                description: >-
+                  A resource of the application is failing (Degraded), was never
+                  created (Missing) or cannot be assessed (Unknown) for 15 minutes.
+            - alert: ArgoCDClusterDisconnected
+              expr: argocd_cluster_connection_status == 0
+              for: 5m
+              labels:
+                severity: critical
+              annotations:
+                summary: ArgoCD lost its connection to the cluster API
+                description: >-
+                  The application controller cannot reach {{ $labels.server }};
+                  no Application is reconciled until the connection is back.

@@ -1,22 +1,23 @@
 {{/*
-  Grafana dashboards as code: every JSON in files/dashboards/ becomes a
-  ConfigMap carrying the sidecar's label, and the sidecar files it into the
-  annotated folder. Editing a dashboard in the UI is deliberately pointless -
-  the next sidecar sync restores this file.
+  Grafana dashboards as code: every JSON under files/dashboards/<folder>/
+  becomes a ConfigMap carrying the sidecar's label, and the sidecar files it
+  into the Grafana folder named after the directory. Editing a dashboard in
+  the UI is deliberately pointless - the next sidecar sync restores this file.
 */}}
 {{- $dashboards := .Values.dashboards }}
-{{- range $path, $_ := .Files.Glob "files/dashboards/*.json" }}
+{{- range $path, $_ := .Files.Glob "files/dashboards/*/*.json" }}
+{{- $folder := base (dir $path) }}
 {{- $file := base $path }}
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ printf "%s-dashboard-%s" $.Release.Name (trimSuffix ".json" $file) | trunc 63 | trimSuffix "-" }}
+  name: {{ printf "%s-dashboard-%s-%s" $.Release.Name $folder (trimSuffix ".json" $file) | trunc 63 | trimSuffix "-" }}
   labels:
     {{- include "monitoring.labels" $ | nindent 4 }}
     {{ $dashboards.label }}: {{ $dashboards.labelValue | quote }}
   annotations:
-    grafana_folder: {{ $dashboards.folder | quote }}
+    grafana_folder: {{ $folder | quote }}
 data:
   {{ $file }}: |-
     {{- $.Files.Get $path | nindent 4 }}

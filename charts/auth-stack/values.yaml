@@ -29,6 +29,11 @@ generic-stack:
       secretMount:
         keys:
           - db-password
+      # Scraped through the PodMonitor generic-stack renders: build_info and the
+      # supervisor's health checks (health_check_up) on the admin port.
+      monitoring:
+        podMonitor:
+          enabled: true
       # Runs once on first init (before the backend can connect): the schema
       # Hibernate expects for the pinned backend commit, the USER_MODIFY /
       # USER_DELETE authorities, role ADMIN, and a trigger that makes the FIRST
@@ -180,6 +185,10 @@ generic-stack:
           memory: 256Mi
 
     frontend:
+      # Same PodMonitor as db: build_info and the server's health checks.
+      monitoring:
+        podMonitor:
+          enabled: true
       minReadySeconds: 5
       resources:
         requests:

@@ -1,0 +1,23 @@
+# Prometheus Operator CRDs (charts/monitoring-crds) ahead of everything that
+# renders a ServiceMonitor or PrometheusRule: the platform apps at wave -2
+# (ArgoCD, Traefik, cert-manager) and the environments at 0. The operator
+# itself stays at wave 0 (infra-monitoring.yaml). No finalizer: deleting this
+# Application must not take every monitor and rule in the cluster with it.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-monitoring-crds
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  project: infra
+  source:
+    repoURL: https://github.com/beatos-learns/VSC-kubernetes-deployment.git
+    targetRevision: main
+    path: charts/monitoring-crds
+  destination:
+    namespace: monitoring
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true # CRDs exceed the client-side annotation size limit

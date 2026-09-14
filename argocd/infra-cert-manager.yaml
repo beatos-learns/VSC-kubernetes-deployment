@@ -20,6 +20,11 @@ spec:
         global:
           leaderElection:
             namespace: cert-manager # keep the leases out of kube-system
+        # The chart's ServiceMonitor: controller, webhook and cainjector on
+        # :9402, scraped by the cluster Prometheus (charts/monitoring).
+        prometheus:
+          servicemonitor:
+            enabled: true
         resources:
           requests:
             cpu: 20m

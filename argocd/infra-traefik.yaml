@@ -57,6 +57,21 @@ spec:
         accessLog:
           enabled: true
           format: json
+        # Scraped by the cluster Prometheus (charts/monitoring): a metrics
+        # Service on the metrics entry point (never on the load balancer) and
+        # the chart's own ServiceMonitor, so labels and port stay the chart's.
+        metrics:
+          prometheus:
+            addRoutersLabels: true # per Ingress host = per environment
+            buckets: "0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5"
+            service:
+              enabled: true
+            serviceMonitor:
+              enabled: true
+              jobLabel: app.kubernetes.io/name # job="traefik"
+            # the chart's CRD check reads API discovery, which lags the CRD
+            # install (infra-monitoring-crds.yaml) by a cache refresh
+            disableAPICheck: true
         ports:
           web:
             # HTTP-01 keeps working: Let's Encrypt follows the redirect to HTTPS

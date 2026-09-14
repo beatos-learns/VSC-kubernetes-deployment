@@ -1,0 +1,3 @@
+# Every CRD the dependency offers stays installed (prometheus-operator-crds.crds.<kind>.enabled),
+# so enabling a Probe or ScrapeConfig later is a values change, not a CRD change.
+prometheus-operator-crds: {}

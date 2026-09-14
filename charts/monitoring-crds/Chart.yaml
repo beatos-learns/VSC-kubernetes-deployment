@@ -1,0 +1,14 @@
+apiVersion: v2
+name: monitoring-crds
+description: >-
+  The Prometheus Operator CRDs on their own, installed ahead of every chart
+  that renders a ServiceMonitor or PrometheusRule (argocd/infra-monitoring-crds.yaml).
+  Pinned to the operator release charts/monitoring runs; validate.yml fails
+  when the two drift apart.
+type: application
+version: 0.1.0
+dependencies:
+  - name: prometheus-operator-crds
+    version: "31.0.1"
+    # OCI, not the https chart repo - see charts/monitoring/Chart.yaml.
+    repository: oci://ghcr.io/prometheus-community/charts
