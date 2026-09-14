@@ -44,7 +44,7 @@ controller:
       memory: 256Mi
     limits:
       cpu: "1"
-      memory: 512Mi
+      memory: 2Gi
 server:
   resources:
     requests:
