@@ -1,7 +1,8 @@
 # Terraform (Aufgabe 3, Infrastructure as Code)
 
 The DOKS cluster the Doks module creates is under Terraform management **as
-imported infrastructure** - nothing here recreates it. `terraform plan` on
+imported infrastructure** - nothing here recreates it; the managed PostgreSQL
+the environments use (Aufgabe 4) is created here. `terraform plan` on
 `main` shows no changes for the running cluster; a change to a variable is a
 reviewed change to the cluster.
 
@@ -13,7 +14,10 @@ terraform/
   terraform.tfvars     the concrete cluster: id, name, version (nothing sensitive)
   imports.tf           import block that adopts the existing cluster into state
   generated.tf         the resource, stated as intent (see its header)
-  outputs.tf           id, endpoint, version, node pool
+  database.tf          managed PostgreSQL: cluster in the VPC, database + role per
+                       environment, firewall for the Kubernetes cluster
+  outputs.tf           cluster id, endpoint, version, node pool; database endpoint
+                       and (sensitive) credentials for the Secrets
   .terraform.lock.hcl  provider build pinned (commit it)
 ```
 
@@ -65,6 +69,26 @@ terraform plan        # No changes. Your infrastructure matches the configuratio
 The import block stays in `imports.tf`: it is a no-op once the resource is in
 state and documents where the cluster came from.
 
+## Managed PostgreSQL (Aufgabe 4)
+
+`database.tf` creates one `db-s-1vcpu-1gb` PostgreSQL 16 cluster in the DOKS
+VPC, a database and a login role per environment (`auth_staging`,
+`auth_prod`) and a firewall that admits only the Kubernetes cluster
+(`var.database_trusted_ips` adds operator addresses, e.g. for `psql`). Its
+outputs feed the environment Secrets - `database` (private host, port,
+database names) and `database_credentials` (sensitive: the roles and the
+admin) - see `bootstrap/README.md` step 2; the chart carries no connection
+data. Backups (daily, 7 days) and point-in-time recovery are the provider's
+(`bootstrap/README.md` step 8). One cluster for both environments is the
+cost decision (USD 15/month for the smallest node); a cluster per environment
+is `for_each` on the cluster resource.
+
+```sh
+terraform -chdir=terraform apply                          # cluster adoption + database, one plan
+terraform -chdir=terraform output database                 # endpoint and database names
+terraform -chdir=terraform output -json database_credentials | jq .   # roles + admin (sensitive)
+```
+
 ## Day-to-day
 
 ```sh
@@ -81,6 +105,9 @@ Typical changes and what they do:
 | `max_nodes` / `min_nodes` | autoscaler bounds; the live count between them is the autoscaler's and ignored |
 | `node_size` | DigitalOcean replaces the node pool - plan it, it drains the workloads |
 | `tags` | keep `doks-VSC-deploy`: `Remove-DoksCluster` refuses to delete untagged clusters |
+| `database_version` / `database_size` | in-place upgrade or resize by DigitalOcean, with a short connection loss - plan it |
+| `database_trusted_ips` | firewall rules only |
+| `environments` | adds or removes a database and its role; removing one drops its data |
 
 Not managed here on purpose: the load balancer and the block-storage volumes.
 They are created by Kubernetes (the Traefik Service, the PVCs) and owned by
@@ -96,9 +123,11 @@ account from CI. The drift check (`plan`) is a local, authenticated step.
 
 ## Relation to the Doks module
 
-`New-DoksCluster` still creates throwaway clusters imperatively (its defaults
-in `Doks/Doks.defaults.psd1` are the variable defaults here). For a cluster
-that is going to stay, adopt it: put its id and version into
-`terraform.tfvars`, `terraform apply`. `Remove-DoksCluster` bypasses
+`New-DoksCluster` creates throwaway clusters imperatively (its defaults in
+`Doks/Doks.defaults.psd1` are the variable defaults here); the database only
+exists through Terraform. Order for a new cluster: `New-DoksCluster`, put its
+id and version into `terraform.tfvars`, `terraform apply` (adopts the cluster,
+creates the database), then `Bootstrap-DoksCluster` (reads the database
+outputs into the Secrets). `Remove-DoksCluster` bypasses
 Terraform - run `terraform state rm digitalocean_kubernetes_cluster.this`
 afterwards, or delete through Terraform in the first place.

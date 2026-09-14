@@ -1,7 +1,7 @@
 {
   "uid": "vsc-auth-stack-kubernetes",
   "title": "auth-stack - Kubernetes resources",
-  "description": "Infrastructure view of the environment namespaces: CPU and memory per pod (kubelet/cAdvisor), usage against the requests and limits of the overlays, restarts, ResourceQuota utilisation and node pressure - plus the components' own health checks, backups, the TLS certificate and volume usage.",
+  "description": "Infrastructure view of the environment namespaces: CPU and memory per pod (kubelet/cAdvisor), usage against the requests and limits of the overlays, restarts, ResourceQuota utilisation and node pressure - plus the components' own health checks (the managed database's reachability included) and the TLS certificate.",
   "tags": ["auth-stack", "kubernetes"],
   "timezone": "browser",
   "editable": false,
@@ -532,14 +532,15 @@
           "refId": "B"
         }
       ]
-    },
+    }
+,
     {
       "id": 14,
       "type": "stat",
       "title": "Scrape targets up",
-      "description": "db, backend and frontend admin ports answering the scrape (generic-stack PodMonitors + the backend ServiceMonitor): three per environment when everything is up.",
+      "description": "backend (ServiceMonitor) and frontend (PodMonitor) admin ports answering the scrape: two per environment when everything is up.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 36 },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 36 },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
@@ -564,7 +565,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "editorMode": "code",
-          "expr": "sum(up{namespace=~\"$namespace\", job=~\"(.*/)?auth-(db|backend|frontend)\"})",
+          "expr": "sum(up{namespace=~\"$namespace\", job=~\"(.*/)?auth-(backend|frontend)\"})",
           "legendFormat": "up",
           "range": true,
           "refId": "A"
@@ -577,7 +578,7 @@
       "title": "Health checks failing",
       "description": "Every component publishes its supervisor's checks as health_check_up{check=...} on the admin port; a failing check is what makes /readyz fail.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 36 },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 36 },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
@@ -613,30 +614,32 @@
     {
       "id": 16,
       "type": "stat",
-      "title": "Time since last backup",
-      "description": "Age of the pg_dump CronJob's last successful run (schedule: daily, bootstrap/README.md step 8).",
+      "title": "Database reachable",
+      "description": "The backend's own database check (SELECT 1 against the managed PostgreSQL, through the connection data in its Secret): yes when every scraped backend pod reaches it.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 36 },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 36 },
       "fieldConfig": {
         "defaults": {
-          "unit": "dtdurations",
+          "unit": "short",
           "decimals": 0,
-          "noValue": "never",
+          "noValue": "no data",
           "color": { "mode": "thresholds" },
           "thresholds": {
             "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 129600 },
-              { "color": "red", "value": 172800 }
-            ]
-          }
+            "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }]
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": { "0": { "text": "no", "index": 0 }, "1": { "text": "yes", "index": 1 } }
+            }
+          ]
         },
         "overrides": []
       },
       "options": {
         "colorMode": "value",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
@@ -646,8 +649,8 @@
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "editorMode": "code",
-          "expr": "time() - max(kube_cronjob_status_last_successful_time{namespace=~\"$namespace\", cronjob=~\".*-db-backup\"})",
-          "legendFormat": "age",
+          "expr": "min(health_check_up{namespace=~\"$namespace\", check=\"database\"})",
+          "legendFormat": "reachable",
           "range": true,
           "refId": "A"
         }
@@ -656,49 +659,10 @@
     {
       "id": 17,
       "type": "stat",
-      "title": "Backup jobs failed",
-      "description": "Failed pg_dump Jobs still present in the namespace (KubeJobFailed alerts on them).",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 36 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "decimals": 0,
-          "noValue": "0",
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "sum(kube_job_status_failed{namespace=~\"$namespace\", job_name=~\".*-db-backup-.*\"})",
-          "legendFormat": "failed",
-          "range": true,
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 18,
-      "type": "stat",
       "title": "TLS certificate: days left",
       "description": "The environment's Let's Encrypt staging certificate (cert-manager); renewal starts at 30 days.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 36 },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 36 },
       "fieldConfig": {
         "defaults": {
           "unit": "d",
@@ -735,54 +699,12 @@
       ]
     },
     {
-      "id": 19,
-      "type": "stat",
-      "title": "Volume most used",
-      "description": "Fullest PersistentVolume of the environment (database or backup PVC).",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 36 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "decimals": 0,
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 70 },
-              { "color": "red", "value": 85 }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "max(100 * kubelet_volume_stats_used_bytes{namespace=~\"$namespace\"} / kubelet_volume_stats_capacity_bytes{namespace=~\"$namespace\"})",
-          "legendFormat": "used",
-          "range": true,
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 20,
+      "id": 18,
       "type": "timeseries",
       "title": "Component health checks (1 = ok)",
-      "description": "health_check_up per component and check, from the admin ports. The backend's checks cover its database connection; db and frontend report their supervisor's own checks.",
+      "description": "health_check_up per component and check from the admin ports: the backend's spring-context and database (the managed PostgreSQL), the frontend's static-root and backend-api.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 40 },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
@@ -808,54 +730,6 @@
           "editorMode": "code",
           "expr": "min by (namespace, job, check) (health_check_up{namespace=~\"$namespace\"})",
           "legendFormat": "{{namespace}} {{job}} {{check}}",
-          "range": true,
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 21,
-      "type": "timeseries",
-      "title": "Volume usage",
-      "description": "Database and backup volumes (kubelet volume stats); the backup PVC keeps the newest N dumps (dbBackup.keep).",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "decimals": 2,
-          "min": 0,
-          "max": 100,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "thresholdsStyle": { "mode": "line" }
-          },
-          "color": { "mode": "palette-classic" },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [{ "color": "transparent", "value": null }, { "color": "orange", "value": 80 }]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": ["mean", "max", "lastNotNull"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "editorMode": "code",
-          "expr": "100 * kubelet_volume_stats_used_bytes{namespace=~\"$namespace\"} / kubelet_volume_stats_capacity_bytes{namespace=~\"$namespace\"}",
-          "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}",
           "range": true,
           "refId": "A"
         }

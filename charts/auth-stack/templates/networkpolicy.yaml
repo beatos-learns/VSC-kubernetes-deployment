@@ -2,23 +2,24 @@
 {{- if .enabled }}
 {{/*
   Namespace isolation (Aufgabe 5): deny all ingress AND egress, then allow only
-  the flows of the stack: edge -> frontend -> backend -> db, DNS for everyone,
-  cert-manager's HTTP-01 solver from the edge, metrics from a monitoring
-  namespace, the backup job -> db. Ports come from the generic-stack component
-  definitions. Kubelet probes come from the node (unaffected).
+  the flows of the stack: edge -> frontend -> backend -> managed database (its
+  private endpoint in the cluster's VPC), the seed Job -> managed database,
+  DNS for everyone, cert-manager's HTTP-01 solver from the edge, metrics from
+  a monitoring namespace. Ports come from the generic-stack component
+  definitions and the database block. Kubelet probes come from the node
+  (unaffected).
 */}}
 {{- $gs := index $.Values "generic-stack" }}
 {{- $ports := dict
       "frontend" $gs.components.frontend.ports.main.containerPort
       "backend"  $gs.components.backend.ports.main.containerPort
-      "db"       $gs.components.db.ports.main.containerPort
       "admin"    $gs.componentDefaults.ports.admin.containerPort }}
 {{- $labels := include "auth-stack.labels" $ }}
 {{- $edge := dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" .ingressControllerNamespace)) }}
 {{- $frontend := dict "podSelector" (dict "matchLabels" (fromYaml (include "auth-stack.componentSelector" (dict "root" $ "name" "frontend")))) }}
 {{- $backend := dict "podSelector" (dict "matchLabels" (fromYaml (include "auth-stack.componentSelector" (dict "root" $ "name" "backend")))) }}
-{{- $db := dict "podSelector" (dict "matchLabels" (fromYaml (include "auth-stack.componentSelector" (dict "root" $ "name" "db")))) }}
-{{- $backup := dict "podSelector" (dict "matchLabels" (dict "app.kubernetes.io/name" "db-backup" "app.kubernetes.io/instance" $.Release.Name)) }}
+{{- $seed := dict "podSelector" (dict "matchLabels" (dict "app.kubernetes.io/name" "db-seed" "app.kubernetes.io/instance" $.Release.Name)) }}
+{{- $database := dict "ipBlock" (dict "cidr" .database.cidr) }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -100,47 +101,28 @@ spec:
           port: {{ $ports.backend }}
   egress:
     - to:
-        - {{- toYaml $db | nindent 10 }}
+        - {{- toYaml $database | nindent 10 }}
       ports:
         - protocol: TCP
-          port: {{ $ports.db }}
+          port: {{ .database.port }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ $.Release.Name }}-db
+  name: {{ $.Release.Name }}-db-seed
   labels:
     {{- $labels | nindent 4 }}
 spec:
   podSelector:
-    {{- toYaml $db.podSelector | nindent 4 }}
-  policyTypes:
-    - Ingress
-  ingress:
-    - from:
-        - {{- toYaml $backend | nindent 10 }}
-        - {{- toYaml $backup | nindent 10 }}
-      ports:
-        - protocol: TCP
-          port: {{ $ports.db }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: {{ $.Release.Name }}-db-backup
-  labels:
-    {{- $labels | nindent 4 }}
-spec:
-  podSelector:
-    {{- toYaml $backup.podSelector | nindent 4 }}
+    {{- toYaml $seed.podSelector | nindent 4 }}
   policyTypes:
     - Egress
   egress:
     - to:
-        - {{- toYaml $db | nindent 10 }}
+        - {{- toYaml $database | nindent 10 }}
       ports:
         - protocol: TCP
-          port: {{ $ports.db }}
+          port: {{ .database.port }}
 {{- if .acmeSolver.enabled }}
 ---
 apiVersion: networking.k8s.io/v1

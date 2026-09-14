@@ -28,6 +28,7 @@ elsewhere. `$env:DIGITALOCEAN_ACCESS_TOKEN` overrides both for a session.
 ```powershell
 New-DoksCluster                    # create (fra1, 2x s-2vcpu-4gb, autoscale 2-5), wait, connect
 kubectl get nodes                  # this window now talks to the new cluster
+                                   # then terraform apply (adopts it, creates the managed database)
 Get-DoksCluster                    # what is running (= what is billing) right now
 Use-DoksCluster k8s-test-fra1      # point this window at an existing cluster
 Bootstrap-DoksCluster              # GitOps handover: namespaces+secrets, ArgoCD, root app
@@ -43,23 +44,25 @@ so several clusters can be driven side by side.
 
 `Bootstrap-DoksCluster` (alias of `Initialize-DoksCluster`) shadows the
 manual procedure in `bootstrap/README.md`: environment namespaces +
-secrets (random `db-password`/`jwt-secret`, optional GHCR pull secret), the
+secrets (the managed database's endpoint and credentials from
+`terraform output`, a random `jwt-secret`, optional GHCR pull secret), the
 `monitoring` namespace with Grafana's admin password and the Alertmanager
 notification channel, ArgoCD (pinned chart version) from
 `bootstrap/argocd-values.yaml`, then the root application `argocd/root.yaml` -
 after which ArgoCD pulls everything from git.
 
 ```powershell
-New-DoksCluster | Bootstrap-DoksCluster            # fresh cluster, one line
+New-DoksCluster                                    # then: cluster id into terraform.tfvars, terraform apply
+Bootstrap-DoksCluster k8s-test-fra1                # secrets from the Terraform outputs, ArgoCD, root app
 Bootstrap-DoksCluster k8s-test-fra1 `
     -GhcrUsername beatos-learns `                  # prompts for the read:packages PAT
     -AlertWebhookUrl https://webhook.site/<id>     # where Alertmanager notifies
 Get-Help Bootstrap-DoksCluster -Full               # all parameters, examples, caveats
 ```
 
-Safe to re-run: existing Secrets are never overwritten (a regenerated
-`db-password` would not match the initialized PostgreSQL PVC), ArgoCD
-upgrades in place, the root application applies declaratively.
+Safe to re-run: existing Secrets are never overwritten, ArgoCD upgrades in
+place, the root application applies declaratively. `terraform apply` must
+have run first: the database outputs are read from `terraform/` (-TerraformDir).
 
 ## Commands
 

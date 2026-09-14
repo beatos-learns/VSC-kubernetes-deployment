@@ -10,11 +10,10 @@
 
 generic-stack:
   components:
+    # psql client of the schema seed Job (the component itself is disabled)
     db:
       image:
         tag: "0.0.1" # promoted via PR
-      persistence:
-        size: 2Gi
 
     backend:
       image:
@@ -53,10 +52,6 @@ generic-stack:
               - auth-prod.139-59-206-48.nip.io
             secretName: auth-prod-tls
 
-dbBackup:
-  keep: 7
-  storage: 5Gi
-
 # Tighter than staging: in production these thresholds are the SLO.
 monitoring:
   alerts:
@@ -65,8 +60,8 @@ monitoring:
     loginFailuresPerSecond: 0.2
 
 namespacePolicy:
-  # limits.cpu 5: db 0.5 + frontend 2x0.2 + backend 5x0.5 + surge 0.5 + 0.2 +
-  # backup 0.5 + ACME solver 0.1 = 4.7 (memory worst case ~2.6Gi of 4Gi)
+  # limits.cpu 5: frontend 2x0.2 + backend 5x0.5 + surge 0.5 + 0.2 + seed Job 0.2 +
+  # ACME solver 0.1 = 3.9 (memory worst case ~1.9Gi of 4Gi)
   resourceQuota:
     requests:
       cpu: "2"
@@ -75,5 +70,3 @@ namespacePolicy:
       cpu: "5"
       memory: 4Gi
     pods: 20
-    storage: 10Gi
-    persistentVolumeClaims: 3

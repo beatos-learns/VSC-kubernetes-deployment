@@ -32,6 +32,8 @@ PDF is not part of the repository).
                                                        ├─ ns monitoring      Prometheus, Grafana, Alertmanager
                                                        ├─ ns auth-staging    release "auth"
                                                        └─ ns auth-prod       release "auth"
+                                                     DigitalOcean Managed PostgreSQL (terraform/)
+                                                       └─ auth_staging, auth_prod  ◄─ VPC + TLS ─ backends, seed Jobs
 ```
 
 Nothing in either repo runs `kubectl apply` or `helm upgrade` against the
@@ -91,10 +93,10 @@ charts/monitoring/          wrapper chart:
   templates/dashboards.yaml renders them into sidecar-labelled ConfigMaps
 charts/auth-stack/          wrapper chart:
   Chart.yaml                pins generic-stack (OCI dependency from GHCR)
-  values.yaml               DO-common: storageClass, rolling-update policy,
-                            resources, seed SQL, ingress + TLS + security
-                            headers, backup, PodMonitors (db, frontend),
-                            namespace policy defaults
+  values.yaml               DO-common: the disabled db component, datasource
+                            wiring from the Secret, resources, seed SQL,
+                            ingress + TLS + security headers, PodMonitor
+                            (frontend), namespace policy defaults
   values-staging.yaml       env overlay — CI promotion target (image tags),
                             small HPA/PDB, hosts, quota
   values-prod.yaml          env overlay — promoted via PR; HPA 2–5, PDBs,
@@ -103,16 +105,19 @@ charts/auth-stack/          wrapper chart:
   templates/                namespace + edge policy: ResourceQuota, LimitRange,
                             NetworkPolicies (default-deny in/out + explicit
                             flows), Traefik security-headers Middleware,
-                            pg_dump CronJob + backup PVC, ServiceMonitor +
+                            schema seed Job (ArgoCD PreSync hook, psql against
+                            the managed database), ServiceMonitor +
                             PrometheusRule for the backend
 Doks/                       PowerShell module: create/connect/delete the
                             throwaway DOKS cluster and run the bootstrap
                             (New-DoksCluster | Bootstrap-DoksCluster);
                             see Doks/README.md
-terraform/                  the DOKS cluster as code (Aufgabe 3): DigitalOcean
-                            provider, import block for the existing cluster,
-                            the generated-then-cleaned resource, variables;
-                            token via environment only; see terraform/README.md
+terraform/                  the DOKS cluster (adopted, Aufgabe 3) and the
+                            managed PostgreSQL (created, Aufgabe 4) as code:
+                            provider, import block, cluster resource, database
+                            + roles + firewall, variables, outputs that feed
+                            the Secrets; token via environment only; see
+                            terraform/README.md
 loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
                             namespace + policy, script ConfigMap, Job; applied
                             per run, results in Prometheus/Grafana; see
@@ -159,12 +164,13 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
   production rate limit is shared with every nip.io user. cert-manager:
   Apache-2.0, CNCF; Let's Encrypt: ISRG (US non-profit) — accepted as
   passive self-hosted exceptions.
-* **Secrets never touch git.** `db-password` and `jwt-secret` are created
+* **Secrets never touch git.** The managed database's endpoint and login
+  role (`terraform output`; keys `db-url`, `db-user`, `db-password`), the
+  seed Job's admin credentials and the random `jwt-secret` are created
   out-of-band per namespace from a manifest on stdin (never on a command
-  line) and referenced via `existingSecret`; the database pod only receives
-  the `db-password` key. Rotation runbook in `bootstrap/README.md`. Upgrade
-  path if full GitOps for secrets is wanted later: Sealed Secrets
-  (Apache-2.0).
+  line) and referenced via `existingSecret`; each pod receives only the keys
+  it names. Rotation runbook in `bootstrap/README.md`. Upgrade path if full
+  GitOps for secrets is wanted later: Sealed Secrets (Apache-2.0).
 * **`argocd/` is a kustomize overlay; the charts stay Helm.** Helm packages
   *applications* — templated, versioned, pulled from OCI, schema-validated,
   signed. `argocd/` is not an application: it is a set of literal objects
@@ -201,7 +207,7 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
 * **Namespace policy is complete, not decorative.** ResourceQuota (CPU,
   memory, pods, storage, PVC count, no LoadBalancers/NodePorts), LimitRange,
   default-deny ingress **and** egress with explicit flows
-  (edge → frontend → backend → db, DNS, ACME solver, metrics, backup job),
+  (edge → frontend → backend → managed database, seed Job → managed database, DNS, ACME solver, metrics),
   Pod Security Admission `restricted` enforced on the namespace, and an
   AppProject that whitelists exactly the kinds the chart renders — no RBAC,
   no Secrets — so a values PR cannot escalate.
@@ -249,15 +255,21 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
   running the two nodes are roughly 90 % committed: the lever is a third node
   from the autoscaler (`min_nodes`/`max_nodes` in `terraform/`) or
   `s-4vcpu-8gb` nodes (6 GiB allocatable), not smaller requests.
-* **Backups are part of the deployment.** A `pg_dump` CronJob per environment
-  (stack's own PostgreSQL image, same major version) writes to a dedicated
-  PVC with retention; restore and volume-snapshot procedure in
-  `bootstrap/README.md`. Postgres stays single-instance: HA would need an
-  operator (Zalando postgres-operator, MIT, Zalando SE) and a larger cluster.
+* **The database is a managed service** (Aufgabe 4). PostgreSQL runs as a
+  DigitalOcean Managed Database (`terraform/database.tf`: one single-node
+  cluster in the DOKS VPC, a database and a login role per environment, a
+  firewall that admits only the Kubernetes cluster), so backups, failover and
+  upgrades are the provider's, and no pod, Service or PVC in the namespaces
+  holds state - the ResourceQuota allows no volume at all. The schema is
+  applied by an ArgoCD PreSync hook (`templates/db-seed-job.yaml`): psql from
+  the stack's PostgreSQL image runs the idempotent seed SQL as the cluster
+  admin before every sync and grants the application role DML only, so the
+  same file is the migration path. The application connects exclusively
+  through the connection data in its Secret, over TLS, to the private
+  endpoint; the NetworkPolicy opens exactly that flow.
 * **Blast radius.** The root app does not prune and carries no finalizer;
   infra apps carry no finalizer either — removing a manifest never cascades
-  into deleting the load balancer or an environment; the backup PVCs are
-  never pruned or cascade-deleted. ArgoCD is version-pinned
+  into deleting the load balancer or an environment. ArgoCD is version-pinned
   and manages itself; the UI is port-forward only, every non-admin identity is
   read-only until an IdP is wired in.
 * **Load tests run in the cluster, but through the front door** (Aufgabe 2).
@@ -293,8 +305,8 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
 | Rollouts | RollingUpdate `maxUnavailable: 0` / `maxSurge: 1`, `minReadySeconds: 5`, hostname anti-affinity | same |
 | Quota (req / lim CPU) | 1 / 3 | 2 / 5 |
 | Quota (req / lim memory) | 1Gi / 2Gi | 2Gi / 4Gi |
-| Quota (storage / PVCs / pods) | 5Gi / 2 / 10 | 10Gi / 3 / 20 |
-| Backups | daily, keep 3, 2Gi PVC | daily, keep 7, 5Gi PVC |
+| Quota (storage / PVCs / pods) | 0 / 0 / 10 | 0 / 0 / 20 |
+| Database | managed PostgreSQL: database + role `auth_staging` | managed PostgreSQL: database + role `auth_prod` (same cluster; DigitalOcean daily backups + PITR) |
 | Host | `auth-staging.<lb-ip>.nip.io` | `auth-prod.<lb-ip>.nip.io` |
 | TLS secret | `auth-staging-tls` | `auth-prod-tls` (both Let's Encrypt staging) |
 | Isolation | default-deny in/out, explicit flows, PSA restricted | same |
@@ -393,4 +405,5 @@ that still holds CRLF copies is refreshed on a clean tree with
 |---|---|
 | 1 Observability | see "7 Monitoring" above: kube-prometheus-stack in ns `monitoring`, per-pod CPU/memory, backend ServiceMonitor (request rate, response time, error rate), the dashboards under `charts/monitoring/files/dashboards/`, PrometheusRule + Alertmanager webhook, all configured in `charts/monitoring/values.yaml` |
 | 2 Chaos Testing | `loadtest/`: k6 as a Kubernetes Job with `scripts/user-mgmt-service.js` (ramping load on `/api/login` + `/api/me`); k6 metrics via remote write into Prometheus, dashboard `k6 load test` (VUs/RPS/p95 next to server-side rate/latency, HPA desired vs. current, CPU vs. target, requests per backend pod); HPA scale-up/down and availability procedure in `loadtest/README.md` |
-| 3 Terraform IaC | `terraform/`: DigitalOcean provider, `imports.tf` import block, `generated.tf` from `terraform plan -generate-config-out` (cleaned, header lists the edits), `variables.tf`, token via `DIGITALOCEAN_TOKEN` only, `terraform fmt`/`validate` in `validate.yml`, `plan` empty for the running cluster (`terraform/README.md`) |
+| 3 Terraform IaC | `terraform/`: DigitalOcean provider, `imports.tf` import block, `generated.tf` from `terraform plan -generate-config-out` (cleaned; its header states what is omitted and why), `variables.tf`, token via `DIGITALOCEAN_TOKEN` only, `terraform fmt`/`validate` in `validate.yml`, `plan` empty for the running cluster (`terraform/README.md`) |
+| 4 Managed Ressources | `terraform/database.tf`: DigitalOcean Managed PostgreSQL (cluster in the DOKS VPC, database + login role per environment, firewall for the Kubernetes cluster) provisioned with the DigitalOcean provider, outputs `database` / `database_credentials`; `charts/auth-stack`: db component disabled (no pod, Service or PVC; quota allows none), the backend reads `db-url`/`db-user`/`db-password` from the `auth-stack-secrets` Secret only, schema via the PreSync seed Job (`templates/db-seed-job.yaml`); procedure in `terraform/README.md` and `bootstrap/README.md` step 2 |

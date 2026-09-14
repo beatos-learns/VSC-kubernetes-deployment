@@ -84,7 +84,6 @@ spec:
             summary: user-mgmt-service has no reachable instance ({{ $ns }})
             description: >-
               No backend pod in {{ $ns }} answered the metrics scrape for 5
-              minutes: the API is down, or the deployment was scaled to zero
-              (restore procedure, bootstrap/README.md step 8).
+              minutes: the API is down, or the deployment was scaled to zero.
 {{- end }}
 {{- end }}

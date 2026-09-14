@@ -15,7 +15,7 @@
         kubectl get nodes                  # this window now talks to the new cluster
         Get-DoksCluster                    # what is running (= what is billing) right now
         Use-DoksCluster k8s-test-fra1      # point this window at an existing cluster
-        Bootstrap-DoksCluster              # GitOps handover: namespaces+secrets, ArgoCD, root app (Get-Help Bootstrap-DoksCluster)
+        Bootstrap-DoksCluster              # GitOps handover: secrets from terraform output, ArgoCD, root app (after terraform apply)
         Disconnect-DoksCluster             # forget the cluster in this window
         Remove-DoksCluster k8s-test-fra1   # delete cluster + its load balancers/volumes + local kubeconfig
 
@@ -308,7 +308,7 @@ function ConvertFrom-DoksSecureString {
 # ---------------------------------------------------------------------------
 
 function Get-DoksTool {
-    param([Parameter(Mandatory)][ValidateSet('doctl', 'kubectl', 'helm')][string]$Name)
+    param([Parameter(Mandatory)][ValidateSet('doctl', 'kubectl', 'helm', 'terraform')][string]$Name)
     if ($script:ToolPaths[$Name]) { return $script:ToolPaths[$Name] }
     $cmd = Get-Command -Name $Name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $cmd) {
@@ -316,6 +316,7 @@ function Get-DoksTool {
             'doctl'   { 'https://docs.digitalocean.com/reference/doctl/how-to/install/' }
             'kubectl' { 'https://kubernetes.io/docs/tasks/tools/' }
             'helm'    { 'https://helm.sh/docs/intro/install/' }
+            'terraform' { 'https://developer.hashicorp.com/terraform/install' }
         }
         throw "'$Name' was not found on PATH. Install it ($hint) and open a new PowerShell window."
     }
@@ -996,6 +997,34 @@ function Test-DoksKubectlResource {
     catch { $false }
 }
 
+function Get-DoksDatabaseOutputs {
+    # The managed database (terraform/database.tf) is known only through the
+    # Terraform outputs: endpoint + database names, and the login roles + admin.
+    param([Parameter(Mandatory)][string]$TerraformDir)
+    $TerraformDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($TerraformDir)
+    if (-not (Test-Path -LiteralPath (Join-Path -Path $TerraformDir -ChildPath 'database.tf') -PathType Leaf)) {
+        throw "No database.tf in $TerraformDir. Pass -TerraformDir pointing at the ops repository's terraform folder."
+    }
+    $exe = Get-DoksTool -Name terraform
+    $read = {
+        param([string]$Name)
+        $ErrorActionPreference = 'Continue'
+        $raw  = @(& $exe "-chdir=$TerraformDir" output -json $Name 2>&1)
+        $code = $LASTEXITCODE
+        $text = @($raw | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+        if ($code -ne 0 -or -not $text.Trim()) {
+            throw "terraform output $Name failed in $TerraformDir (exit code $code): $($text.Trim()) - run 'terraform apply' there first; the managed database and its credentials are Terraform outputs."
+        }
+        ConvertFrom-Json -InputObject $text
+    }
+    $info  = & $read 'database'
+    $creds = & $read 'database_credentials'
+    if (-not $info.host -or -not $info.port -or -not $creds.admin.user) {
+        throw "Terraform outputs 'database' / 'database_credentials' are incomplete - has 'terraform apply' created the database cluster?"
+    }
+    [pscustomobject]@{ Info = $info; Credentials = $creds }
+}
+
 function Initialize-DoksCluster {
     <#
     .SYNOPSIS
@@ -1009,7 +1038,8 @@ function Initialize-DoksCluster {
         Steps (in order):
           1. Connect   - point this window at the cluster (-ClusterName), verify access.
           2. Secrets   - per environment namespace: create the namespace, an
-                         'auth-stack-secrets' Secret (random db-password + jwt-secret),
+                         'auth-stack-secrets' Secret (the managed database's endpoint and
+                         credentials from the Terraform outputs + a random jwt-secret),
                          and optionally a GHCR image pull Secret (-GhcrUsername/-GhcrToken).
                          Then the monitoring namespace with Grafana's admin Secret
                          (random password) and the Alertmanager notification channel
@@ -1022,9 +1052,9 @@ function Initialize-DoksCluster {
                          find the load balancer IP for DNS.
 
         The command is idempotent and safe to re-run: existing Secrets are NEVER
-        touched (regenerating db-password would orphan the PostgreSQL PVC, which
-        initializes its password on first start), ArgoCD upgrades in place, and
-        the root application is applied declaratively.
+        touched, ArgoCD upgrades in place, and the root application is applied
+        declaratively. 'terraform apply' must have run before: the database
+        outputs are read from -TerraformDir.
 
     .PARAMETER ClusterName
         Cluster to bootstrap. Connects this window to it first (Use-DoksCluster).
@@ -1037,6 +1067,11 @@ function Initialize-DoksCluster {
     .PARAMETER SecretName
         Name of the per-namespace application Secret the chart references via
         'existingSecret'. Default: auth-stack-secrets.
+
+    .PARAMETER TerraformDir
+        Folder of the Terraform configuration whose outputs 'database' and
+        'database_credentials' provide the managed database's endpoint and
+        credentials (terraform/database.tf). Default: <RepoRoot>/terraform.
 
     .PARAMETER GhcrUsername
         GitHub username for the GHCR image pull Secret. Omit if the GHCR packages
@@ -1107,7 +1142,8 @@ function Initialize-DoksCluster {
         [string]$MonitoringNamespace = 'monitoring',
         [string]$AlertWebhookUrl,
         [string]$RepoRoot,
-        [string]$ArgoCdChartVersion
+        [string]$ArgoCdChartVersion,
+        [string]$TerraformDir
     )
 
     if (-not $RepoRoot) { $RepoRoot = Split-Path -Path $PSScriptRoot -Parent }
@@ -1126,6 +1162,8 @@ function Initialize-DoksCluster {
         $ArgoCdChartVersion = $match.Matches[0].Groups[1].Value
     }
     Get-DoksTool -Name helm | Out-Null
+    if (-not $TerraformDir) { $TerraformDir = Join-Path -Path $RepoRoot -ChildPath 'terraform' }
+    $database = Get-DoksDatabaseOutputs -TerraformDir $TerraformDir
 
     if ($GhcrUsername -and -not $GhcrToken) {
         $GhcrToken = Read-Host -Prompt "GHCR PAT for $GhcrUsername, read:packages only (input is hidden)" -AsSecureString
@@ -1154,9 +1192,15 @@ function Initialize-DoksCluster {
         }
 
         if (Test-DoksKubectlResource -Kind secret -Name $SecretName -Namespace $ns) {
-            Write-Host "  Secret $SecretName exists - left untouched (a new db-password would not match the initialized PostgreSQL PVC)."
+            Write-Host "  Secret $SecretName exists - left untouched."
         }
         else {
+            $envKey = $ns -replace '^auth-', ''
+            $dbName = $database.Info.databases.$envKey
+            $role   = $database.Credentials.environments.$envKey
+            if (-not $dbName -or -not $role) {
+                throw "Terraform output 'database' has no environment '$envKey' for namespace $ns (var.environments in terraform/variables.tf lists: $(@($database.Info.databases.PSObject.Properties.Name) -join ', '))."
+            }
             $manifest = @"
 apiVersion: v1
 kind: Secret
@@ -1165,11 +1209,18 @@ metadata:
   namespace: $ns
 type: Opaque
 stringData:
-  db-password: "$(New-DoksRandomSecret -Bytes 24)"
+  db-host: "$($database.Info.host)"
+  db-port: "$($database.Info.port)"
+  db-name: "$dbName"
+  db-url: "jdbc:postgresql://$($database.Info.host):$($database.Info.port)/$dbName?sslmode=require"
+  db-user: "$($role.user)"
+  db-password: "$($role.password)"
+  db-admin-user: "$($database.Credentials.admin.user)"
+  db-admin-password: "$($database.Credentials.admin.password)"
   jwt-secret: "$(New-DoksRandomSecret -Bytes 48)"
 "@
             Invoke-KubectlManifest -Manifest $manifest -Arguments @('create', '-f', '-')
-            Write-Host "  Secret $SecretName created (random db-password + jwt-secret)." -ForegroundColor Green
+            Write-Host "  Secret $SecretName created (managed database $dbName as $($role.user), random jwt-secret)." -ForegroundColor Green
         }
 
         if ($GhcrUsername -and $GhcrToken) {

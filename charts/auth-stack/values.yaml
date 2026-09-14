@@ -4,17 +4,14 @@
 #
 # Everything under `generic-stack:` is passed to the dependency chart and is
 # validated by its values.schema.json. The other top-level keys drive this
-# wrapper chart's own templates (namespace policy, edge policy, backups) and
-# are validated by ./values.schema.json.
+# wrapper chart's own templates (namespace policy, edge policy, schema seed)
+# and are validated by ./values.schema.json.
 # ---------------------------------------------------------------------------
 
 generic-stack:
-  global:
-    # DigitalOcean block storage for the PostgreSQL PVC
-    storageClass: do-block-storage
-    # The GHCR packages are public, so no pull secret is needed. For private
-    # packages create `ghcr-pull` per namespace (bootstrap/README.md) and set
-    # imagePullSecrets: [{ name: ghcr-pull }].
+  # The GHCR packages are public, so no pull secret is needed. For private
+  # packages create `ghcr-pull` per namespace (bootstrap/README.md) and set
+  # global.imagePullSecrets: [{ name: ghcr-pull }].
 
   components:
     # Replaced by the cluster-wide Traefik ingress controller
@@ -22,154 +19,27 @@ generic-stack:
     proxy:
       enabled: false
 
+    # Replaced by DigitalOcean Managed PostgreSQL (terraform/): no pod, Service
+    # or PVC in the cluster. The image tag the overlays promote is still used -
+    # it is the psql client of the schema seed Job (templates/db-seed-job.yaml).
     db:
-      # Secret with key `db-password`; created out-of-band (bootstrap/README.md).
-      # Only that key is projected into the database pod.
-      existingSecret: auth-stack-secrets
-      secretMount:
-        keys:
-          - db-password
-      # Scraped through the PodMonitor generic-stack renders: build_info and the
-      # supervisor's health checks (health_check_up) on the admin port.
-      monitoring:
-        podMonitor:
-          enabled: true
-      # Runs once on first init (before the backend can connect): the schema
-      # Hibernate expects for the pinned backend commit, the USER_MODIFY /
-      # USER_DELETE authorities, role ADMIN, and a trigger that makes the FIRST
-      # registered user ADMIN (the app has no other path to grant a role).
-      # Register the intended admin right after the first rollout. Schema
-      # changes need a manual migration on existing volumes (bootstrap/README.md).
-      files:
-        10-user-mgmt-authorities.sql: |
-          -- ============================================================================
-          -- user-mgmt-service: schema + authority seed (PostgreSQL 16)
-          --
-          -- Target  : github.com/yagan93/user_mgmt_service @ 747b7f4e3d1f09cc4434a75d9c991ea091fda548
-          --           Spring Boot 4.1.0-M3 / Hibernate ORM 7.2.7.Final / PostgreSQL JDBC 42.7.10
-          -- Mounted : generic-stack `components.db.files` -> /docker-entrypoint-initdb.d (read-only)
-          -- Runner  : pgsupervisor first-init: every *.sql there, sorted by name, once, via
-          --           psql -v ON_ERROR_STOP=1 -h /tmp -U $POSTGRES_USER -d $POSTGRES_DB -f <file>
-          --           => role `app`, database `app` (chart defaults); the backend cannot connect yet.
-          -- Content : 1. the tables Hibernate generates for the pinned commit (so `ddl-auto=update`
-          --              has nothing to do and `ddl-auto=validate` passes),
-          --           2. authorities USER_MODIFY / USER_DELETE,
-          --           3. role ADMIN holding both,
-          --           4. trigger: the FIRST registered user is granted ADMIN (the application has
-          --              no other path that ever assigns a role to a user).
-          -- Idempotent: every statement tolerates re-execution.
-          -- ============================================================================
-
-          BEGIN;
-
-          -- 1. schema -------------------------------------------------------------------
-          -- Verbatim what Hibernate 7.2.7 (PostgreSQLDialect) emitted for this commit with
-          -- ddl-auto=update on an empty database (column order, types, constraint names):
-          --   java.util.UUID -> uuid, String -> varchar(255), LocalDateTime -> timestamp(6).
-          -- Constraint names = Hibernate implicit names (FK|UK + base35(MD5("table`t`[references`r`]column`c`")));
-          -- PostgreSQL folds them to lower case, exactly as it does for Hibernate's own DDL.
-
-          CREATE TABLE IF NOT EXISTS authority (
-              id   uuid         NOT NULL,
-              name varchar(255) NOT NULL,
-              PRIMARY KEY (id),
-              CONSTRAINT UKjdeu5vgpb8k5ptsqhrvamuad2 UNIQUE (name)
-          );
-
-          CREATE TABLE IF NOT EXISTS role (
-              id   uuid         NOT NULL,
-              name varchar(255) NOT NULL,
-              PRIMARY KEY (id),
-              CONSTRAINT UK8sewwnpamngi6b1dwaa88askk UNIQUE (name)
-          );
-
-          CREATE TABLE IF NOT EXISTS role_authority (
-              role_id      uuid NOT NULL,
-              authority_id uuid NOT NULL,
-              PRIMARY KEY (role_id, authority_id),
-              CONSTRAINT FKqbri833f7xop13bvdje3xxtnw FOREIGN KEY (authority_id) REFERENCES authority (id),
-              CONSTRAINT FK2052966dco7y9f97s1a824bj1 FOREIGN KEY (role_id)      REFERENCES role (id)
-          );
-
-          CREATE TABLE IF NOT EXISTS users (
-              id               uuid         NOT NULL,
-              created_at       timestamp(6),
-              modified_at      timestamp(6),
-              email            varchar(255) NOT NULL,
-              first_name       varchar(255),
-              last_name        varchar(255),
-              password         varchar(255),
-              created_by       uuid,
-              last_modified_by uuid,
-              PRIMARY KEY (id),
-              CONSTRAINT UK6dotkott2kjsp8vw4d0m25fb7 UNIQUE (email),
-              CONSTRAINT FKibk1e3kaxy5sfyeekp8hbhnim FOREIGN KEY (created_by)       REFERENCES users (id),
-              CONSTRAINT FKj1vmabulqqfwd5q8w2wxm73c3 FOREIGN KEY (last_modified_by) REFERENCES users (id)
-          );
-
-          CREATE TABLE IF NOT EXISTS users_role (
-              users_id uuid NOT NULL,
-              role_id  uuid NOT NULL,
-              PRIMARY KEY (users_id, role_id),
-              CONSTRAINT FK3qjq7qsiigxa82jgk0i0wuq3g FOREIGN KEY (role_id)  REFERENCES role (id),
-              CONSTRAINT FKiu0xsee0dmwa28nffgyf4bcvc FOREIGN KEY (users_id) REFERENCES users (id)
-          );
-
-          -- 2. authorities (the names UserController's @PreAuthorize checks) -----------------
-          INSERT INTO authority (id, name) VALUES
-              ('b7c1e2a4-9d3f-4c6e-8a15-2f7d9e0b4c63', 'USER_MODIFY'),
-              ('e4a9d0c2-5b7f-4e1a-9c38-6d2f8b1a7e05', 'USER_DELETE')
-          ON CONFLICT (name) DO NOTHING;
-
-          -- 3. role ADMIN = USER_MODIFY + USER_DELETE ----------------------------------------
-          INSERT INTO role (id, name) VALUES
-              ('3f8b6c1d-a2e4-4d9b-b071-5c9e2d4f8a16', 'ADMIN')
-          ON CONFLICT (name) DO NOTHING;
-
-          INSERT INTO role_authority (role_id, authority_id)
-          SELECT r.id, a.id
-          FROM role r CROSS JOIN authority a
-          WHERE r.name = 'ADMIN' AND a.name IN ('USER_MODIFY', 'USER_DELETE')
-          ON CONFLICT DO NOTHING;
-
-          -- 4. bootstrap: the first registered user becomes ADMIN -----------------------------
-          -- POST /users/register always stores an empty role set; PUT /users/{id} (the only way to
-          -- assign roles) itself requires USER_MODIFY. Without this trigger nobody can ever obtain it.
-          -- Fires only while no user holds ADMIN, so it also re-arms if the last admin is deleted.
-          CREATE OR REPLACE FUNCTION users_bootstrap_admin() RETURNS trigger
-          LANGUAGE plpgsql AS $$
-          BEGIN
-              IF NOT EXISTS (SELECT 1 FROM users_role ur JOIN role r ON r.id = ur.role_id WHERE r.name = 'ADMIN') THEN
-                  INSERT INTO users_role (users_id, role_id)
-                  SELECT NEW.id, r.id FROM role r WHERE r.name = 'ADMIN'
-                  ON CONFLICT DO NOTHING;
-              END IF;
-              RETURN NEW;
-          END
-          $$;
-
-          DROP TRIGGER IF EXISTS users_bootstrap_admin ON users;
-          CREATE TRIGGER users_bootstrap_admin
-              AFTER INSERT ON users
-              FOR EACH ROW EXECUTE FUNCTION users_bootstrap_admin();
-
-          COMMIT;
-      resources:
-        requests:
-          cpu: 100m
-          memory: 256Mi
-        limits:
-          cpu: 500m
-          memory: 512Mi
+      enabled: false
 
     backend:
-      # Secret with keys `db-password` and `jwt-secret`
+      # Secret created out-of-band (bootstrap/README.md): the managed database's
+      # endpoint and login role (db-url, db-user, db-password) plus jwt-secret.
+      # The chart's own datasource wiring points at the in-cluster db component
+      # and is replaced by the Secret's keys.
       existingSecret: auth-stack-secrets
-      # No public ingress: the frontend proxies /api/* to it (API_URL).
-      # The seed SQL owns the schema: the backend only validates it, never
-      # alters it implicitly (same in staging, so drift fails there first).
       env:
+        SPRING_DATASOURCE_URL: null
+        SPRING_DATASOURCE_USERNAME: null
+        # The seed SQL owns the schema: the backend only validates it, never
+        # alters it implicitly (same in staging, so drift fails there first).
         SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+      secretEnv:
+        SPRING_DATASOURCE_URL: db-url
+        SPRING_DATASOURCE_USERNAME: db-user
       # Publish the admin port (probes + /metrics) on the Service so the
       # ServiceMonitor has an endpoint to scrape (templates/servicemonitor.yaml).
       # Still not public: only the monitoring namespace may reach it.
@@ -185,7 +55,8 @@ generic-stack:
           memory: 256Mi
 
     frontend:
-      # Same PodMonitor as db: build_info and the server's health checks.
+      # Scraped through the PodMonitor generic-stack renders: build_info and the
+      # server's health checks (health_check_up) on the admin port.
       monitoring:
         podMonitor:
           enabled: true
@@ -215,29 +86,144 @@ edge:
     hstsSeconds: 31536000
 
 # ---------------------------------------------------------------------------
-# PostgreSQL backups (templates/db-backup.yaml): pg_dump CronJob into a
-# dedicated PVC that survives app deletion, keeping the newest `keep` dumps.
-# Restore: set `restore.file` to a dump name -> templates/db-restore-job.yaml
-# renders a one-off Job (see bootstrap/README.md).
+# Schema seed (templates/db-seed-job.yaml): an ArgoCD PreSync hook applies the
+# SQL below to the managed database before every sync, as the cluster admin
+# from the Secret. Every statement is idempotent, so the same file is the
+# migration path - extend it with idempotent ALTERs and merge. The application
+# role is granted DML only.
 # ---------------------------------------------------------------------------
-dbBackup:
+dbSeed:
   enabled: true
-  schedule: "17 2 * * *" # UTC
-  keep: 7
-  storage: 2Gi
   image:
     registry: ghcr.io/beatos-learns/vsc-kubernetes-containers
     repository: postgresql
-    tag: "" # empty = components.db.image.tag (pg_dump must match the server major)
+    tag: "" # empty = components.db.image.tag (psql of the same major version)
   resources:
     requests:
       cpu: 50m
       memory: 64Mi
     limits:
-      cpu: 500m
-      memory: 256Mi
-  restore:
-    file: ""
+      cpu: 200m
+      memory: 128Mi
+  files:
+    10-user-mgmt-authorities.sql: |
+      -- ============================================================================
+      -- user-mgmt-service: schema + authority seed (PostgreSQL 16)
+      --
+      -- Target  : github.com/yagan93/user_mgmt_service @ 747b7f4e3d1f09cc4434a75d9c991ea091fda548
+      --           Spring Boot 4.1.0-M3 / Hibernate ORM 7.2.7.Final / PostgreSQL JDBC 42.7.10
+      -- Mounted : charts/auth-stack dbSeed.files -> /seed in the db-seed Job (ArgoCD PreSync hook)
+      -- Runner  : psql -v ON_ERROR_STOP=1 -v app_user=<login role> -f <file>, as the cluster
+      --           admin of the managed database, before every sync
+      -- Content : 1. the tables Hibernate generates for the pinned commit (so `ddl-auto=update`
+      --              has nothing to do and `ddl-auto=validate` passes),
+      --           2. authorities USER_MODIFY / USER_DELETE,
+      --           3. role ADMIN holding both,
+      --           4. trigger: the FIRST registered user is granted ADMIN (the application has
+      --              no other path that ever assigns a role to a user),
+      --           5. DML grants for the application role (psql variable app_user).
+      -- Idempotent: every statement tolerates re-execution.
+      -- ============================================================================
+
+      BEGIN;
+
+      -- 1. schema -------------------------------------------------------------------
+      -- Verbatim what Hibernate 7.2.7 (PostgreSQLDialect) emitted for this commit with
+      -- ddl-auto=update on an empty database (column order, types, constraint names):
+      --   java.util.UUID -> uuid, String -> varchar(255), LocalDateTime -> timestamp(6).
+      -- Constraint names = Hibernate implicit names (FK|UK + base35(MD5("table`t`[references`r`]column`c`")));
+      -- PostgreSQL folds them to lower case, exactly as it does for Hibernate's own DDL.
+
+      CREATE TABLE IF NOT EXISTS authority (
+          id   uuid         NOT NULL,
+          name varchar(255) NOT NULL,
+          PRIMARY KEY (id),
+          CONSTRAINT UKjdeu5vgpb8k5ptsqhrvamuad2 UNIQUE (name)
+      );
+
+      CREATE TABLE IF NOT EXISTS role (
+          id   uuid         NOT NULL,
+          name varchar(255) NOT NULL,
+          PRIMARY KEY (id),
+          CONSTRAINT UK8sewwnpamngi6b1dwaa88askk UNIQUE (name)
+      );
+
+      CREATE TABLE IF NOT EXISTS role_authority (
+          role_id      uuid NOT NULL,
+          authority_id uuid NOT NULL,
+          PRIMARY KEY (role_id, authority_id),
+          CONSTRAINT FKqbri833f7xop13bvdje3xxtnw FOREIGN KEY (authority_id) REFERENCES authority (id),
+          CONSTRAINT FK2052966dco7y9f97s1a824bj1 FOREIGN KEY (role_id)      REFERENCES role (id)
+      );
+
+      CREATE TABLE IF NOT EXISTS users (
+          id               uuid         NOT NULL,
+          created_at       timestamp(6),
+          modified_at      timestamp(6),
+          email            varchar(255) NOT NULL,
+          first_name       varchar(255),
+          last_name        varchar(255),
+          password         varchar(255),
+          created_by       uuid,
+          last_modified_by uuid,
+          PRIMARY KEY (id),
+          CONSTRAINT UK6dotkott2kjsp8vw4d0m25fb7 UNIQUE (email),
+          CONSTRAINT FKibk1e3kaxy5sfyeekp8hbhnim FOREIGN KEY (created_by)       REFERENCES users (id),
+          CONSTRAINT FKj1vmabulqqfwd5q8w2wxm73c3 FOREIGN KEY (last_modified_by) REFERENCES users (id)
+      );
+
+      CREATE TABLE IF NOT EXISTS users_role (
+          users_id uuid NOT NULL,
+          role_id  uuid NOT NULL,
+          PRIMARY KEY (users_id, role_id),
+          CONSTRAINT FK3qjq7qsiigxa82jgk0i0wuq3g FOREIGN KEY (role_id)  REFERENCES role (id),
+          CONSTRAINT FKiu0xsee0dmwa28nffgyf4bcvc FOREIGN KEY (users_id) REFERENCES users (id)
+      );
+
+      -- 2. authorities (the names UserController's @PreAuthorize checks) -----------------
+      INSERT INTO authority (id, name) VALUES
+          ('b7c1e2a4-9d3f-4c6e-8a15-2f7d9e0b4c63', 'USER_MODIFY'),
+          ('e4a9d0c2-5b7f-4e1a-9c38-6d2f8b1a7e05', 'USER_DELETE')
+      ON CONFLICT (name) DO NOTHING;
+
+      -- 3. role ADMIN = USER_MODIFY + USER_DELETE ----------------------------------------
+      INSERT INTO role (id, name) VALUES
+          ('3f8b6c1d-a2e4-4d9b-b071-5c9e2d4f8a16', 'ADMIN')
+      ON CONFLICT (name) DO NOTHING;
+
+      INSERT INTO role_authority (role_id, authority_id)
+      SELECT r.id, a.id
+      FROM role r CROSS JOIN authority a
+      WHERE r.name = 'ADMIN' AND a.name IN ('USER_MODIFY', 'USER_DELETE')
+      ON CONFLICT DO NOTHING;
+
+      -- 4. bootstrap: the first registered user becomes ADMIN -----------------------------
+      -- POST /users/register always stores an empty role set; PUT /users/{id} (the only way to
+      -- assign roles) itself requires USER_MODIFY. Without this trigger nobody can ever obtain it.
+      -- Fires only while no user holds ADMIN, so it also re-arms if the last admin is deleted.
+      CREATE OR REPLACE FUNCTION users_bootstrap_admin() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+          IF NOT EXISTS (SELECT 1 FROM users_role ur JOIN role r ON r.id = ur.role_id WHERE r.name = 'ADMIN') THEN
+              INSERT INTO users_role (users_id, role_id)
+              SELECT NEW.id, r.id FROM role r WHERE r.name = 'ADMIN'
+              ON CONFLICT DO NOTHING;
+          END IF;
+          RETURN NEW;
+      END
+      $$;
+
+      DROP TRIGGER IF EXISTS users_bootstrap_admin ON users;
+      CREATE TRIGGER users_bootstrap_admin
+          AFTER INSERT ON users
+          FOR EACH ROW EXECUTE FUNCTION users_bootstrap_admin();
+
+      -- 5. the application role: DML on these and on future tables, nothing else ---------
+      GRANT USAGE ON SCHEMA public TO :"app_user";
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO :"app_user";
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :"app_user";
+
+      COMMIT;
 
 # ---------------------------------------------------------------------------
 # Observability (Aufgabe 7): the ServiceMonitor points the cluster Prometheus
@@ -268,7 +254,8 @@ namespacePolicy:
   # Hard caps per namespace (Aufgabe 5). With a cpu/memory quota active every
   # pod MUST declare requests and limits (the LimitRange below fills gaps).
   # Sizing rule for limits: sum(maxReplicas x limits) + one rolling-update
-  # surge pod per Deployment + the backup pod + the ACME solver pod.
+  # surge pod per Deployment + the seed Job + the ACME solver pod. No storage:
+  # the database is managed, nothing in the namespace claims a volume.
   resourceQuota:
     enabled: true
     requests:
@@ -278,8 +265,8 @@ namespacePolicy:
       cpu: "3"
       memory: 2Gi
     pods: 15
-    storage: 5Gi
-    persistentVolumeClaims: 2
+    storage: "0"
+    persistentVolumeClaims: 0
 
   limitRange:
     enabled: true
@@ -293,8 +280,6 @@ namespacePolicy:
       max:
         cpu: "1"
         memory: 1Gi
-    pvc:
-      max: 10Gi
 
   # Default-deny ingress + egress with explicit flows (Aufgabe 5); ports are
   # taken from the generic-stack component definitions. See
@@ -312,3 +297,8 @@ namespacePolicy:
     monitoring:
       enabled: true
       namespace: monitoring
+    # the managed database's private endpoint: an address inside the cluster's
+    # VPC (DigitalOcean's private range), on its PostgreSQL port
+    database:
+      cidr: 10.0.0.0/8
+      port: 25060

@@ -638,7 +638,7 @@
       "id": 14,
       "type": "timeseries",
       "title": "Persistent volume usage",
-      "description": "Prometheus TSDB (retention 8 GiB of 10 Gi), Alertmanager, the databases and the backup volumes. KubePersistentVolumeFillingUp alerts before one runs full.",
+      "description": "Prometheus TSDB (retention 8 GiB of 10 Gi) and Alertmanager - the only volumes in the cluster, the database being managed. KubePersistentVolumeFillingUp alerts before one runs full.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
       "fieldConfig": {
