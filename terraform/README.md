@@ -2,7 +2,7 @@
 
 The DOKS cluster the Doks module creates is under Terraform management **as
 imported infrastructure** - nothing here recreates it; the managed PostgreSQL
-the environments use (Aufgabe 4) is created here. `terraform plan` on
+the environments use (Aufgabe 4, Managed Ressources) is created here. `terraform plan` on
 `main` shows no changes for the running cluster; a change to a variable is a
 reviewed change to the cluster.
 
@@ -69,7 +69,7 @@ terraform plan        # No changes. Your infrastructure matches the configuratio
 The import block stays in `imports.tf`: it is a no-op once the resource is in
 state and documents where the cluster came from.
 
-## Managed PostgreSQL (Aufgabe 4)
+## Managed PostgreSQL (Aufgabe 4, Managed Ressources)
 
 `database.tf` creates one `db-s-1vcpu-1gb` PostgreSQL 16 cluster in the DOKS
 VPC, a database and a login role per environment (`auth_staging`,

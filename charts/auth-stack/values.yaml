@@ -14,22 +14,22 @@ generic-stack:
   # global.imagePullSecrets: [{ name: ghcr-pull }].
 
   components:
-    # Replaced by the cluster-wide Traefik ingress controller
-    # (argocd/infra-traefik.yaml) + the frontend Ingress below.
+    # Off: the cluster-wide Traefik ingress controller
+    # (argocd/infra-traefik.yaml) serves the frontend Ingress below.
     proxy:
       enabled: false
 
-    # Replaced by DigitalOcean Managed PostgreSQL (terraform/): no pod, Service
-    # or PVC in the cluster. The image tag the overlays promote is still used -
-    # it is the psql client of the schema seed Job (templates/db-seed-job.yaml).
+    # Off: PostgreSQL is the managed DigitalOcean database (terraform/) - no pod,
+    # Service or PVC in the cluster. The image tag the overlays promote is the
+    # psql client of the schema seed Job (templates/db-seed-job.yaml).
     db:
       enabled: false
 
     backend:
       # Secret created out-of-band (bootstrap/README.md): the managed database's
       # endpoint and login role (db-url, db-user, db-password) plus jwt-secret.
-      # The chart's own datasource wiring points at the in-cluster db component
-      # and is replaced by the Secret's keys.
+      # The chart's own datasource wiring (in-cluster db component) is nulled
+      # out here; the Secret's keys take its place.
       existingSecret: auth-stack-secrets
       env:
         SPRING_DATASOURCE_URL: null
@@ -251,7 +251,7 @@ monitoring:
 # Namespace policy (rendered by templates/)
 # ---------------------------------------------------------------------------
 namespacePolicy:
-  # Hard caps per namespace (Aufgabe 5). With a cpu/memory quota active every
+  # Hard caps per namespace (Aufgabe 5, Namespaces). With a cpu/memory quota active every
   # pod MUST declare requests and limits (the LimitRange below fills gaps).
   # Sizing rule for limits: sum(maxReplicas x limits) + one rolling-update
   # surge pod per Deployment + the seed Job + the ACME solver pod. No storage:
@@ -281,7 +281,7 @@ namespacePolicy:
         cpu: "1"
         memory: 1Gi
 
-  # Default-deny ingress + egress with explicit flows (Aufgabe 5); ports are
+  # Default-deny ingress + egress with explicit flows (Aufgabe 5, Namespaces); ports are
   # taken from the generic-stack component definitions. See
   # templates/networkpolicy.yaml. Kubelet probes come from the node and are
   # not affected (Cilium host entity on DOKS).

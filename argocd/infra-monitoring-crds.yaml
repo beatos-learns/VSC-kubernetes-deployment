@@ -1,6 +1,6 @@
 # Prometheus Operator CRDs (charts/monitoring-crds) ahead of everything that
 # renders a ServiceMonitor or PrometheusRule: the platform apps at wave -2
-# (ArgoCD, Traefik, cert-manager) and the environments at 0. The operator
+# (ArgoCD, Traefik, cert-manager, Kyverno) and the environments at 0. The operator
 # itself stays at wave 0 (infra-monitoring.yaml). No finalizer: deleting this
 # Application must not take every monitor and rule in the cluster with it.
 apiVersion: argoproj.io/v1alpha1

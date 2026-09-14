@@ -1,0 +1,60 @@
+{{/*
+  Every container in every watched namespace declares CPU and memory requests
+  and limits: the node budget is planned from requests (Platform - cluster
+  capacity dashboard) and a container without limits is budget nobody counted.
+  The rule matches Pods; Kyverno's autogen applies it to Deployments,
+  StatefulSets, DaemonSets, Jobs and CronJobs, so a Deployment is rejected at
+  admission. Kyverno's default resource filters keep kube-system and its own
+  namespace out. failurePolicy Ignore: this is hygiene, not a security
+  boundary - an unreachable webhook must not keep the platform's own pods
+  (ingress, ArgoCD, monitoring) from being rescheduled.
+*/}}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resources
+  labels:
+    {{- include "policies.labels" . | nindent 4 }}
+  annotations:
+    policies.kyverno.io/title: Require CPU and memory requests and limits
+    policies.kyverno.io/category: Operations
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Every container, init containers included, must declare CPU and memory
+      requests and limits; the cluster's capacity planning and quotas rely on
+      them.
+spec:
+  background: true
+  failurePolicy: Ignore
+  rules:
+    - name: cpu-and-memory
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        failureAction: Enforce
+        message: >-
+          every container (init containers included) must declare
+          resources.requests.cpu, resources.requests.memory,
+          resources.limits.cpu and resources.limits.memory
+        pattern:
+          spec:
+            =(initContainers):
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    cpu: "?*"
+                    memory: "?*"
+            containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    cpu: "?*"
+                    memory: "?*"

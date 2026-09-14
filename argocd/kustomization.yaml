@@ -12,7 +12,9 @@ resources:
   - argocd.yaml
   - infra-traefik.yaml
   - infra-cert-manager.yaml
+  - infra-kyverno.yaml
   - infra-cert-manager-issuer.yaml
+  - infra-policies.yaml
   - infra-metrics-server.yaml
   - infra-monitoring.yaml
   - app-staging.yaml

@@ -1,0 +1,71 @@
+{{/*
+  Application images come from the CI repo's registry path only, carry a tag
+  or digest and never `latest`: the tag is the promotion interface of this
+  repository, and validate.yml can only vouch for references it can resolve.
+  cert-manager's HTTP-01 solver pods run in the same namespaces with their own
+  image; the precondition lets them through by their label. A precondition
+  rather than an exclude selector, because a selector anywhere in a rule
+  switches Kyverno's autogen off and the Deployment would only be caught at
+  Pod level.
+*/}}
+{{- $registry := .Values.images.registry }}
+{{- $match := dict "any" (list (dict "resources" (dict "kinds" (list "Pod") "namespaces" .Values.applicationNamespaces))) }}
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-images
+  labels:
+    {{- include "policies.labels" . | nindent 4 }}
+  annotations:
+    policies.kyverno.io/title: Application images from the CI registry, pinned
+    policies.kyverno.io/category: Supply chain
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Containers in the application namespaces run images from
+      {{ $registry }} only, referenced by a tag or digest and never by `latest`.
+spec:
+  background: true
+  rules:
+    - name: only-the-ci-registry
+      match:
+        {{- toYaml $match | nindent 8 }}
+      preconditions:
+        {{- include "policies.notAcmeSolver" . | nindent 8 }}
+      validate:
+        failureAction: Enforce
+        message: images must come from {{ $registry }}
+        pattern:
+          spec:
+            =(initContainers):
+              - image: "{{ $registry }}/*"
+            containers:
+              - image: "{{ $registry }}/*"
+    - name: tag-or-digest
+      match:
+        {{- toYaml $match | nindent 8 }}
+      preconditions:
+        {{- include "policies.notAcmeSolver" . | nindent 8 }}
+      validate:
+        failureAction: Enforce
+        message: images must be referenced by a tag or digest
+        pattern:
+          spec:
+            =(initContainers):
+              - image: "*:*"
+            containers:
+              - image: "*:*"
+    - name: no-latest
+      match:
+        {{- toYaml $match | nindent 8 }}
+      preconditions:
+        {{- include "policies.notAcmeSolver" . | nindent 8 }}
+      validate:
+        failureAction: Enforce
+        message: the latest tag is not a version - pin the image
+        pattern:
+          spec:
+            =(initContainers):
+              - image: "!*:latest"
+            containers:
+              - image: "!*:latest"

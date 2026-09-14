@@ -1,8 +1,9 @@
 # AppProject for the platform apps (Traefik, cert-manager, ClusterIssuer,
-# metrics-server, kube-prometheus-stack, ArgoCD itself): explicit chart
-# repositories and namespaces (kube-system for metrics-server's auth-reader
-# RoleBinding and the monitoring stack's kubelet/CoreDNS Services), and only
-# the cluster-scoped kinds those charts actually create.
+# Kyverno and its policies, metrics-server, kube-prometheus-stack, ArgoCD
+# itself): explicit chart repositories and namespaces (kube-system for
+# metrics-server's auth-reader RoleBinding and the monitoring stack's
+# kubelet/CoreDNS Services), and only the cluster-scoped kinds those charts
+# actually create.
 apiVersion: argoproj.io/v1alpha1
 kind: AppProject
 metadata:
@@ -10,11 +11,12 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-4"
 spec:
-  description: Cluster platform (ingress controller, certificates, metrics, monitoring, ArgoCD)
+  description: Cluster platform (ingress controller, certificates, policies, metrics, monitoring, ArgoCD)
   sourceRepos:
     - https://github.com/beatos-learns/VSC-kubernetes-deployment.git
     - https://traefik.github.io/charts
     - https://charts.jetstack.io
+    - https://kyverno.github.io/kyverno/
     - https://kubernetes-sigs.github.io/metrics-server/
     - https://argoproj.github.io/argo-helm
   destinations:
@@ -22,6 +24,8 @@ spec:
       namespace: traefik
     - server: https://kubernetes.default.svc
       namespace: cert-manager
+    - server: https://kubernetes.default.svc
+      namespace: policy
     - server: https://kubernetes.default.svc
       namespace: metrics-server
     - server: https://kubernetes.default.svc
@@ -43,6 +47,8 @@ spec:
       kind: IngressClass
     - group: cert-manager.io
       kind: ClusterIssuer
+    - group: kyverno.io
+      kind: ClusterPolicy
     - group: admissionregistration.k8s.io
       kind: MutatingWebhookConfiguration
     - group: admissionregistration.k8s.io

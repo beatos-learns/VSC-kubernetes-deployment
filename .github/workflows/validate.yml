@@ -1,7 +1,7 @@
 # Validation gate for the Ops repo. Deliberately deploy-free:
 # ArgoCD pulls from main — this workflow only proves that what lands
 # on main renders, conforms, and references signed, existing artifacts
-# (Aufgabe 4: no imperative deployment).
+# (Aufgabe 4, Pipeline: no imperative deployment).
 name: validate
 
 on:
@@ -24,8 +24,12 @@ env:
   YQ_VERSION: v4.45.4
   YQ_SHA256: b96de04645707e14a12f52c37e6266832e03c29e95b9b139cddcae7314466e69
   CRD_SCHEMAS: 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
-  # every image/chart must carry a keyless signature from the CI repo's build workflow
-  COSIGN_IDENTITY_RE: '^https://github.com/beatos-learns/VSC-kubernetes-containers/.github/workflows/build.yml@refs/heads/(master|main)$'
+  # the Kyverno CLI judges the rendered manifests with charts/policies (Aufgabe 5, Kyverno)
+  KYVERNO_VERSION: v1.19.1
+  KYVERNO_SHA256: b38228f367fc0fdc2b08f4c83ea50ac5f16c60ff8d62d76a66157c33c47b70ae
+  # every image/chart must carry a keyless signature from the CI repo's build
+  # workflow; charts/policies enforces the same identity at admission
+  COSIGN_IDENTITY_RE: '^https://github.com/beatos-learns/VSC-kubernetes-containers/\.github/workflows/build\.yml@refs/heads/(master|main)$'
   COSIGN_OIDC_ISSUER: https://token.actions.githubusercontent.com
 
 jobs:
@@ -51,6 +55,16 @@ jobs:
           curl -sSfL -o kubeconform.tgz "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
           echo "${KUBECONFORM_SHA256}  kubeconform.tgz" | sha256sum -c -
           tar -xzf kubeconform.tgz kubeconform
+
+      - name: Install yq and the Kyverno CLI
+        run: |
+          set -euo pipefail
+          curl -sSfL -o yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          echo "${YQ_SHA256}  yq" | sha256sum -c -
+          chmod +x yq
+          curl -sSfL -o kyverno.tgz "https://github.com/kyverno/kyverno/releases/download/${KYVERNO_VERSION}/kyverno-cli_${KYVERNO_VERSION}_linux_x86_64.tar.gz"
+          echo "${KYVERNO_SHA256}  kyverno.tgz" | sha256sum -c -
+          tar -xzOf kyverno.tgz kyverno > kyverno-cli && chmod +x kyverno-cli # not ./kyverno: helm would take it for a local chart
 
       - name: Vendor the generic-stack dependency
         run: helm dependency build charts/auth-stack
@@ -97,6 +111,18 @@ jobs:
           -schema-location "$CRD_SCHEMAS"
           rendered-${{ matrix.environment }}.yaml
 
+      # What Kyverno will say at admission (charts/policies), before ArgoCD
+      # finds out: the validate policies over the same render, placed in the
+      # namespace the environment deploys to. The signature policy is not
+      # exercised offline - cosign below is the gate for that.
+      - name: Policies admit the rendered manifests
+        run: |
+          set -euo pipefail
+          helm template policies charts/policies > policies.yaml
+          ./yq 'select(. != null) | .metadata.namespace = "auth-${{ matrix.environment }}"' \
+            rendered-${{ matrix.environment }}.yaml > namespaced-${{ matrix.environment }}.yaml
+          ./kyverno-cli apply policies.yaml --resource namespaced-${{ matrix.environment }}.yaml --remove-color
+
       # A promotion may only merge when every referenced image exists in GHCR
       # and was signed by the CI repo's build workflow (keyless, Rekor-logged).
       - name: Verify image references exist and are signed
@@ -127,7 +153,7 @@ jobs:
           echo "${KUBECONFORM_SHA256}  kubeconform.tgz" | sha256sum -c -
           tar -xzf kubeconform.tgz kubeconform
 
-      - name: Install kustomize and yq
+      - name: Install kustomize, yq and the Kyverno CLI
         run: |
           set -euo pipefail
           curl -sSfL -o kustomize.tgz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz"
@@ -136,6 +162,9 @@ jobs:
           curl -sSfL -o yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
           echo "${YQ_SHA256}  yq" | sha256sum -c -
           chmod +x yq
+          curl -sSfL -o kyverno.tgz "https://github.com/kyverno/kyverno/releases/download/${KYVERNO_VERSION}/kyverno-cli_${KYVERNO_VERSION}_linux_x86_64.tar.gz"
+          echo "${KYVERNO_SHA256}  kyverno.tgz" | sha256sum -c -
+          tar -xzOf kyverno.tgz kyverno > kyverno-cli && chmod +x kyverno-cli # not ./kyverno: helm would take it for a local chart
 
       - name: Lint and render the cert-manager-issuer chart
         run: |
@@ -156,6 +185,45 @@ jobs:
           helm lint charts/monitoring-crds --strict
           helm template infra-monitoring-crds charts/monitoring-crds --namespace monitoring \
             --include-crds > rendered-monitoring-crds.yaml
+
+      - name: Lint and render the policies chart
+        run: |
+          helm lint charts/policies --strict
+          helm template policies charts/policies > rendered-policies.yaml
+
+      - name: Policies pin the signing identity this workflow verifies
+        # Otherwise the cluster would admit what CI rejects, or the reverse.
+        run: |
+          set -euo pipefail
+          re=$(./yq -N '.images.signer.subjectRegExp' charts/policies/values.yaml)
+          issuer=$(./yq -N '.images.signer.issuer' charts/policies/values.yaml)
+          [ "$re" = "$COSIGN_IDENTITY_RE" ] && [ "$issuer" = "$COSIGN_OIDC_ISSUER" ] \
+            || { echo "::error::charts/policies/values.yaml images.signer differs from COSIGN_IDENTITY_RE / COSIGN_OIDC_ISSUER"; exit 1; }
+          echo "signing identity: chart and workflow agree"
+
+      - name: Policies reject the fixture, one policy per document
+        # charts/policies/tests/violations.yaml: every Deployment breaks exactly
+        # the policy its name starts with (violates-<policy>...). Fixed
+        # expectations, so a rule that stops matching, or one that starts
+        # rejecting a compliant Deployment, fails here and not on the cluster.
+        run: |
+          set -euo pipefail
+          # the CLI prints deprecation warnings ahead of the report, and exits 1 on any fail
+          { ./kyverno-cli apply rendered-policies.yaml --resource charts/policies/tests/violations.yaml \
+              --policy-report --output-format json || true; } | sed -n '/^{/,$p' > policy-report.json
+          jq -e -r '
+            ["require-resources", "require-probes", "require-labels", "restrict-images", "verify-image-signatures"] as $policies
+            | [ .results[] | select(.result == "fail") | {name: .resources[0].name, policy} ] as $fails
+            | ([ .results[].resources[0].name ] | unique) as $docs
+            | [ $docs[] | . as $d
+                | ($fails | map(select(.name == $d) | .policy) | unique) as $got
+                | ($d | sub("^violates-"; "")) as $s
+                | [ $policies[] | . as $p | select($s | startswith($p)) ] as $want
+                | select($got != $want)
+                | "\($d): rejected by \(if ($got | length) == 0 then "nothing" else ($got | join(",")) end), expected \($want | join(","))" ] as $bad
+            | if ($docs | length) == 0 then "::error::the fixture produced no results" | halt_error(1)
+              elif ($bad | length) > 0 then ($bad | map("::error::" + .) | join("\n")) | halt_error(1)
+              else "\($docs | length) documents, each rejected by the intended policy only" end' policy-report.json
 
       - name: CRD chart and operator chart pin the same operator release
         # charts/monitoring runs with crds.enabled=false and programs against
@@ -238,11 +306,11 @@ jobs:
         run: ./kustomize build argocd/ > rendered-argocd.yaml
 
       - name: Render the load test manifests
-        # loadtest/ is applied by hand per run (Aufgabe 2), not by ArgoCD -
+        # loadtest/ is applied by hand per run (Aufgabe 2, Chaos Testing), not by ArgoCD -
         # it still has to build and conform like everything else in the repo.
         run: ./kustomize build loadtest/ > rendered-loadtest.yaml
 
-      - name: Validate ArgoCD, cert-manager, monitoring and load test manifests
+      - name: Validate ArgoCD, cert-manager, monitoring, policy and load test manifests
         # CRD schemas from the community catalog; job name is ruleset-pinned.
         # -skip CustomResourceDefinition: the upstream store carries no schema
         # for the kind itself, and the operator CRDs ship verbatim with the
@@ -257,7 +325,7 @@ jobs:
           -schema-location default
           -schema-location "$CRD_SCHEMAS"
           -skip CustomResourceDefinition
-          argocd/ rendered-argocd.yaml rendered-issuer.yaml rendered-monitoring.yaml rendered-monitoring-crds.yaml rendered-loadtest.yaml
+          argocd/ rendered-argocd.yaml rendered-issuer.yaml rendered-monitoring.yaml rendered-monitoring-crds.yaml rendered-policies.yaml rendered-loadtest.yaml
 
       - name: sync-defaults.patch adds, never overrides
         # A patch may fill in a field a manifest leaves unset - that is its job.
@@ -319,30 +387,42 @@ jobs:
             | if length == 0 then "\($apps | length) Applications, \($projects | length - 1) AppProjects: all invariants hold"
               else (map("::error::" + .) | join("\n")) | halt_error(1) end'
 
-      - name: Platform charts render the ServiceMonitors their Applications enable
-        # Traefik, cert-manager and ArgoCD are scraped through their own charts'
-        # ServiceMonitors (values in argocd/infra-*.yaml, bootstrap/argocd-values.yaml).
-        # A monitor that selects nothing reads as "no traffic", so render each
-        # chart with those values and prove that every ServiceMonitor matches a
-        # Service of the same render on a port that exists.
+      - name: Render the upstream platform charts with their Applications' values
+        # Traefik, cert-manager, Kyverno, metrics-server and ArgoCD as ArgoCD
+        # renders them (values in argocd/infra-*.yaml, bootstrap/argocd-values.yaml),
+        # for the two gates below.
         run: |
           set -euo pipefail
           t="${RUNNER_TEMP:-$(mktemp -d)}"
-          ./yq -N '.spec.source.helm.valuesObject' argocd/infra-traefik.yaml > "$t/traefik.values.yaml"
-          ./yq -N '.spec.source.helm.valuesObject' argocd/infra-cert-manager.yaml > "$t/cert-manager.values.yaml"
-          render() { # <name> <application file> <release> <namespace> <values file>
-            local repo chart ver
+          render() { # <name> <application file> <release> <namespace> [values file]
+            local repo chart ver values
             repo=$(./yq -N '.spec.source.repoURL // .spec.sources[0].repoURL' "argocd/$2")
             chart=$(./yq -N '.spec.source.chart // .spec.sources[0].chart' "argocd/$2")
             ver=$(./yq -N '.spec.source.targetRevision // .spec.sources[0].targetRevision' "argocd/$2")
+            values=${5:-}
+            if [ -z "$values" ]; then
+              values="$t/$1.values.yaml"
+              ./yq -N '.spec.source.helm.valuesObject' "argocd/$2" > "$values"
+            fi
             helm template "$3" "$chart" --repo "$repo" --version "$ver" --namespace "$4" \
-              --api-versions monitoring.coreos.com/v1 --values "$5" > "$t/$1.rendered.yaml"
+              --api-versions monitoring.coreos.com/v1 --values "$values" > "$t/$1.rendered.yaml"
           }
-          render traefik infra-traefik.yaml infra-traefik traefik "$t/traefik.values.yaml"
-          render cert-manager infra-cert-manager.yaml infra-cert-manager cert-manager "$t/cert-manager.values.yaml"
+          render traefik infra-traefik.yaml infra-traefik traefik
+          render cert-manager infra-cert-manager.yaml infra-cert-manager cert-manager
+          render kyverno infra-kyverno.yaml infra-kyverno policy
+          render metrics-server infra-metrics-server.yaml infra-metrics-server metrics-server
           render argocd argocd.yaml argocd argocd bootstrap/argocd-values.yaml
+
+      - name: Platform charts render the ServiceMonitors their Applications enable
+        # Traefik, cert-manager, Kyverno and ArgoCD are scraped through their own
+        # charts' ServiceMonitors. A monitor that selects nothing reads as "no
+        # traffic", so prove that every ServiceMonitor matches a Service of the
+        # same render on a port that exists.
+        run: |
+          set -euo pipefail
+          t="${RUNNER_TEMP:-$(mktemp -d)}"
           rc=0
-          for name in traefik cert-manager argocd; do
+          for name in traefik cert-manager kyverno argocd; do
             ./yq -o=json 'select(. != null)' "$t/$name.rendered.yaml" | jq -s -r --arg name "$name" '
               def matches($labels; $sel):
                 (($sel.matchLabels // {}) | to_entries | all(($labels[.key] // null) == .value))
@@ -366,8 +446,23 @@ jobs:
           done
           exit $rc
 
+      - name: Policies admit the platform charts
+        # require-resources (charts/policies) judges every namespace Kyverno
+        # watches: a platform pod without full requests and limits would be
+        # rejected at admission and its Application stuck. Kyverno's own
+        # namespace is exempt; helm test hooks are dropped (never applied).
+        run: |
+          set -euo pipefail
+          t="${RUNNER_TEMP:-$(mktemp -d)}"
+          for f in "$t"/traefik.rendered.yaml "$t"/cert-manager.rendered.yaml "$t"/metrics-server.rendered.yaml \
+                   "$t"/argocd.rendered.yaml rendered-monitoring.yaml rendered-loadtest.yaml; do
+            ./yq 'select(. != null) | select((.metadata.annotations."helm.sh/hook" // "") != "test")' "$f" > "$t/judged.yaml"
+            echo "== $f"
+            ./kyverno-cli apply rendered-policies.yaml --resource "$t/judged.yaml" --remove-color
+          done
+
   terraform:
-    # Aufgabe 3: the cluster definition must always format, initialise and
+    # Aufgabe 3 (Terraform): the cluster definition must always format, initialise and
     # validate. No token here on purpose - init -backend=false only fetches the
     # pinned provider; the drift check (`terraform plan`) is a local,
     # authenticated step (terraform/README.md).

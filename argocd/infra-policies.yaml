@@ -1,0 +1,20 @@
+# The cluster's ClusterPolicies (charts/policies, Aufgabe 5 Kyverno): applied once
+# Kyverno is up (wave -1) and before the environments they judge (wave 0).
+# ArgoCD reports a policy Healthy only once Kyverno has admitted and readied
+# it. Cluster-scoped, so destination.namespace only names Helm's bookkeeping.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-policies
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: infra
+  source:
+    repoURL: https://github.com/beatos-learns/VSC-kubernetes-deployment.git
+    targetRevision: main
+    path: charts/policies
+    helm:
+      releaseName: policies
+  destination:
+    namespace: policy

@@ -257,7 +257,7 @@
       "id": 6,
       "type": "stat",
       "title": "Pod quota used",
-      "description": "Pods against the namespace ResourceQuota (Aufgabe 5).",
+      "description": "Pods against the namespace ResourceQuota (Aufgabe 5, Namespaces).",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
       "fieldConfig": {

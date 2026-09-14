@@ -23,6 +23,19 @@ configs:
         end
       end
       return hs
+    # Kyverno writes a report per judged resource; keep them out of ArgoCD's
+    # cache and UI (read with kubectl, bootstrap/README.md step 11).
+    resource.exclusions: |
+      - apiGroups:
+          - reports.kyverno.io
+          - wgpolicyk8s.io
+        kinds:
+          - EphemeralReport
+          - ClusterEphemeralReport
+          - PolicyReport
+          - ClusterPolicyReport
+        clusters:
+          - "*"
   rbac:
     # Everyone but `admin` is read-only; grant more via SSO groups once an
     # identity provider is wired in (Dex stays off until then).
@@ -33,6 +46,14 @@ dex:
   enabled: false
 applicationSet:
   replicas: 0 # the chart has no `enabled` switch for it
+  # the Deployment still exists and require-resources (charts/policies) judges it
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
 notifications:
   enabled: false
 

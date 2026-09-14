@@ -1,5 +1,5 @@
 # Every text file is LF in the repository AND in the working tree, on every
-# platform: this overrides core.autocrlf, so a Windows checkout no longer turns
+# platform: this overrides core.autocrlf, so a Windows checkout does not turn
 # LF into CRLF, and a tool that writes CRLF is normalised back on commit.
 * text=auto eol=lf
 

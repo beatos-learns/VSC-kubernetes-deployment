@@ -1,4 +1,4 @@
-# DigitalOcean Managed PostgreSQL (Aufgabe 4): one single-node cluster in the
+# DigitalOcean Managed PostgreSQL (Aufgabe 4, Managed Ressources): one single-node cluster in the
 # DOKS VPC, one database and one login role per environment, reachable only
 # from the Kubernetes cluster (plus var.database_trusted_ips). Backups,
 # failover and version upgrades are DigitalOcean's; nothing in the Kubernetes

@@ -1,0 +1,19 @@
+# Namespaces that run the application (charts/auth-stack): the probe, label,
+# registry and signature policies apply there. The resource policy applies to
+# every namespace Kyverno watches (all but kube-system and its own).
+applicationNamespaces:
+  - auth-staging
+  - auth-prod
+
+images:
+  # the CI repo's registry path: the only source of application images
+  registry: ghcr.io/beatos-learns/vsc-kubernetes-containers
+  # keyless cosign identity of the CI repo's build workflow - the same regex
+  # validate.yml gates promotions with (CI fails when the two differ)
+  signer:
+    issuer: https://token.actions.githubusercontent.com
+    subjectRegExp: '^https://github.com/beatos-learns/VSC-kubernetes-containers/\.github/workflows/build\.yml@refs/heads/(master|main)$'
+    rekorUrl: https://rekor.sigstore.dev
+  # cert-manager's HTTP-01 solver pods run in the application namespaces with
+  # this image (argocd/infra-cert-manager.yaml); the image policies let them through
+  acmeSolver: quay.io/jetstack/cert-manager-acmesolver

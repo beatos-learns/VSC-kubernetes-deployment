@@ -8,7 +8,7 @@ bills by the hour - one to delete *including* its load balancers and
 volumes.
 
 Works in Windows PowerShell 5.1 and PowerShell 7 (Windows, Linux, macOS).
-Requires `doctl` and `kubectl` on `PATH`; `helm` too for
+Requires `doctl` and `kubectl` on `PATH`; `helm` and `terraform` too for
 `Bootstrap-DoksCluster`.
 
 ## One-time setup
@@ -16,7 +16,7 @@ Requires `doctl` and `kubectl` on `PATH`; `helm` too for
 ```powershell
 Import-Module .\Doks           # or the full path to this folder
 Set-DoksToken                  # paste a DO API token once (Kubernetes read+write)
-Test-DoksSetup                 # doctl / kubectl / token / API all green?
+Test-DoksSetup                 # doctl / kubectl / helm / terraform / token / API all green?
 ```
 
 The token is stored per user, never in this repo: Windows Credential
@@ -26,9 +26,9 @@ elsewhere. `$env:DIGITALOCEAN_ACCESS_TOKEN` overrides both for a session.
 ## Daily use
 
 ```powershell
-New-DoksCluster                    # create (fra1, 2x s-2vcpu-4gb, autoscale 2-5), wait, connect
+New-DoksCluster                    # create (fra1, 2x s-2vcpu-4gb, autoscale 2-10), wait, connect
 kubectl get nodes                  # this window now talks to the new cluster
-                                   # then terraform apply (adopts it, creates the managed database)
+                                   # then: id + version into terraform/terraform.tfvars, terraform apply
 Get-DoksCluster                    # what is running (= what is billing) right now
 Use-DoksCluster k8s-test-fra1      # point this window at an existing cluster
 Bootstrap-DoksCluster              # GitOps handover: namespaces+secrets, ArgoCD, root app
@@ -89,8 +89,8 @@ All destructive commands support `-WhatIf` / `-Confirm`;
 Later layers win; `Get-DoksDefault` shows the effective result,
 `Test-DoksSetup` shows which layers were loaded:
 
-1. built-in defaults (`fra1`, `s-2vcpu-2gb`, autoscale 1–5, …)
-   — the repo file below raises this to 2× `s-2vcpu-4gb` for the auth stack
+1. built-in defaults (`fra1`, 2× `s-2vcpu-2gb`, autoscale 2–10, …)
+   — the repo file below raises the node size to `s-2vcpu-4gb` for the auth stack
 2. `Doks.defaults.psd1` next to the module — the **repo's** settings,
    committed (tag `doks-VSC-deploy`, kubeconfigs to `../kubeconfig`)
 3. `~/.doks/defaults.psd1` — personal overrides, never committed
