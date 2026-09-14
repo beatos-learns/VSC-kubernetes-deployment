@@ -6,7 +6,7 @@ description: >-
   where alerts are routed) and adds the Grafana dashboards that visualise the
   auth stack.
 type: application
-version: 0.1.0
+version: 0.2.0
 dependencies:
   - name: kube-prometheus-stack
     version: "90.0.0"

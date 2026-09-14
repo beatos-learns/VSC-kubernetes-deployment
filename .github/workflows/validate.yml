@@ -150,6 +150,40 @@ jobs:
           helm template monitoring charts/monitoring --namespace monitoring \
             --include-crds > rendered-monitoring.yaml
 
+      - name: Lint and render the monitoring CRD chart
+        run: |
+          helm dependency build charts/monitoring-crds
+          helm lint charts/monitoring-crds --strict
+          helm template infra-monitoring-crds charts/monitoring-crds --namespace monitoring \
+            --include-crds > rendered-monitoring-crds.yaml
+
+      - name: CRD chart and operator chart pin the same operator release
+        # charts/monitoring runs with crds.enabled=false and programs against
+        # the API charts/monitoring-crds installs; a newer operator on older
+        # CRDs (or the reverse) only fails at runtime, in the cluster.
+        run: |
+          set -euo pipefail
+          op=$(helm show chart charts/monitoring/charts/kube-prometheus-stack-*.tgz | ./yq -N '.appVersion')
+          crd=$(helm show chart charts/monitoring-crds/charts/prometheus-operator-crds-*.tgz | ./yq -N '.appVersion')
+          [ -n "$op" ] && [ "$op" = "$crd" ] \
+            || { echo "::error::kube-prometheus-stack targets operator '$op' but prometheus-operator-crds ships the CRDs of '$crd'"; exit 1; }
+          echo "operator $op: chart and CRDs agree"
+
+      - name: Grafana dashboards are valid JSON with unique uids
+        # The sidecar drops a file it cannot parse and Grafana lets a duplicate
+        # uid overwrite another dashboard - both without a word.
+        run: |
+          set -euo pipefail
+          n=0
+          for f in charts/monitoring/files/dashboards/*/*.json; do
+            jq -e '.uid and .title and (.panels | length > 0)' "$f" >/dev/null \
+              || { echo "::error::$f: not valid JSON, or uid/title/panels missing"; exit 1; }
+            n=$((n + 1))
+          done
+          dupes=$(jq -r '.uid' charts/monitoring/files/dashboards/*/*.json | sort | uniq -d)
+          [ -z "$dupes" ] || { echo "::error::duplicate dashboard uid(s): $dupes"; exit 1; }
+          echo "$n dashboards, uids unique"
+
       - name: Every manifest in argocd/ is wired into the kustomization
         # The root app renders argocd/ through kustomize, so a file that is
         # neither in resources: nor a patch is silently not deployed and not
@@ -223,7 +257,7 @@ jobs:
           -schema-location default
           -schema-location "$CRD_SCHEMAS"
           -skip CustomResourceDefinition
-          argocd/ rendered-argocd.yaml rendered-issuer.yaml rendered-monitoring.yaml rendered-loadtest.yaml
+          argocd/ rendered-argocd.yaml rendered-issuer.yaml rendered-monitoring.yaml rendered-monitoring-crds.yaml rendered-loadtest.yaml
 
       - name: sync-defaults.patch adds, never overrides
         # A patch may fill in a field a manifest leaves unset - that is its job.
@@ -284,6 +318,53 @@ jobs:
             | ($kinds + $counts + $dupes + $violations)
             | if length == 0 then "\($apps | length) Applications, \($projects | length - 1) AppProjects: all invariants hold"
               else (map("::error::" + .) | join("\n")) | halt_error(1) end'
+
+      - name: Platform charts render the ServiceMonitors their Applications enable
+        # Traefik, cert-manager and ArgoCD are scraped through their own charts'
+        # ServiceMonitors (values in argocd/infra-*.yaml, bootstrap/argocd-values.yaml).
+        # A monitor that selects nothing reads as "no traffic", so render each
+        # chart with those values and prove that every ServiceMonitor matches a
+        # Service of the same render on a port that exists.
+        run: |
+          set -euo pipefail
+          t="${RUNNER_TEMP:-$(mktemp -d)}"
+          ./yq -N '.spec.source.helm.valuesObject' argocd/infra-traefik.yaml > "$t/traefik.values.yaml"
+          ./yq -N '.spec.source.helm.valuesObject' argocd/infra-cert-manager.yaml > "$t/cert-manager.values.yaml"
+          render() { # <name> <application file> <release> <namespace> <values file>
+            local repo chart ver
+            repo=$(./yq -N '.spec.source.repoURL // .spec.sources[0].repoURL' "argocd/$2")
+            chart=$(./yq -N '.spec.source.chart // .spec.sources[0].chart' "argocd/$2")
+            ver=$(./yq -N '.spec.source.targetRevision // .spec.sources[0].targetRevision' "argocd/$2")
+            helm template "$3" "$chart" --repo "$repo" --version "$ver" --namespace "$4" \
+              --api-versions monitoring.coreos.com/v1 --values "$5" > "$t/$1.rendered.yaml"
+          }
+          render traefik infra-traefik.yaml infra-traefik traefik "$t/traefik.values.yaml"
+          render cert-manager infra-cert-manager.yaml infra-cert-manager cert-manager "$t/cert-manager.values.yaml"
+          render argocd argocd.yaml argocd argocd bootstrap/argocd-values.yaml
+          rc=0
+          for name in traefik cert-manager argocd; do
+            ./yq -o=json 'select(. != null)' "$t/$name.rendered.yaml" | jq -s -r --arg name "$name" '
+              def matches($labels; $sel):
+                (($sel.matchLabels // {}) | to_entries | all(($labels[.key] // null) == .value))
+                and (($sel.matchExpressions // []) | all(. as $e | ($labels[$e.key] // null) as $v
+                  | if $e.operator == "In" then ($e.values | index($v)) != null
+                    elif $e.operator == "NotIn" then ($e.values | index($v)) == null
+                    elif $e.operator == "Exists" then $v != null
+                    elif $e.operator == "DoesNotExist" then $v == null
+                    else false end));
+              [ .[] | select(.kind == "ServiceMonitor") ] as $sms
+              | [ .[] | select(.kind == "Service") ] as $svcs
+              | if ($sms | length) == 0 then ["\($name): no ServiceMonitor rendered - its metrics are switched off"] else
+                [ $sms[] | . as $sm
+                  | ($sm.spec.endpoints | map(.port // .targetPort | tostring)) as $ports
+                  | select(([ $svcs[] | select(matches(.metadata.labels // {}; $sm.spec.selector)
+                        and any(.spec.ports[]; ((.name // "") as $n | ($ports | index($n)) != null)
+                                             or ((.targetPort // "" | tostring) as $tp | ($ports | index($tp)) != null))) ] | length) == 0)
+                  | "\($name): ServiceMonitor \($sm.metadata.name) matches no rendered Service on port(s) \($ports | join(","))" ] end
+              | if length == 0 then "\($name): every ServiceMonitor selects a rendered Service"
+                else (map("::error::" + .) | join("\n")) | halt_error(1) end' || rc=1
+          done
+          exit $rc
 
   terraform:
     # Aufgabe 3: the cluster definition must always format, initialise and

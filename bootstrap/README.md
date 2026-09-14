@@ -111,10 +111,11 @@ kubectl apply -f ../argocd/root.yaml
 kubectl -n argocd get applications -w
 ```
 
-The root app syncs `argocd/`: the two AppProjects, Traefik, cert-manager and
-its ClusterIssuer, metrics-server (DOKS does not ship one; the HPA needs it),
-the monitoring stack, ArgoCD itself, and the two environment Applications
-(sync-waves −3 … 0). `kubectl top nodes` works once metrics-server is up.
+The root app syncs `argocd/`: the two AppProjects, the Prometheus Operator
+CRDs, Traefik, cert-manager and its ClusterIssuer, metrics-server (DOKS does
+not ship one; the HPA needs it), the monitoring stack, ArgoCD itself, and the
+two environment Applications (sync-waves −4 … 0). `kubectl top nodes` works
+once metrics-server is up.
 
 `argocd/` is a kustomize directory (`argocd/kustomization.yaml`), which is how
 the shared sync policy stays in one file. `root.yaml` is deliberately kept
@@ -208,7 +209,8 @@ the first HPA-managed sync does not scale to 1 in between:
 ## 10. Monitoring
 
 `infra-monitoring` installs kube-prometheus-stack from `charts/monitoring`
-into the `monitoring` namespace; `charts/monitoring/values.yaml` is its entire
+into the `monitoring` namespace (its CRDs come first, from
+`infra-monitoring-crds`); `charts/monitoring/values.yaml` is its entire
 configuration. Like ArgoCD, the three UIs are port-forward only:
 
 ```sh
@@ -219,10 +221,14 @@ kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-alertmanager 9
 ```
 
 Grafana takes the credentials from the `grafana-admin` Secret (step 2); the
-two dashboards of this repo live in the **auth-stack** folder, next to the
-bundled kube-prometheus set. That the application is really scraped is visible
-in Prometheus → Status → Target health (`serviceMonitor/auth-staging/…` and
-`…/auth-prod/…` must be *up*) and here:
+dashboards of this repo live in the **auth-stack** folder (user-mgmt-service,
+Kubernetes resources, k6 load test) and the **platform** folder (cluster
+capacity, edge: Traefik + cert-manager, ArgoCD), next to the bundled
+kube-prometheus set. That the application is really scraped is visible in
+Prometheus → Status → Target health (`serviceMonitor/auth-staging/…`,
+`podMonitor/auth-staging/…` and the `auth-prod` counterparts must be *up*;
+the platform jobs `traefik`, `cert-manager`, `cainjector`, `webhook` and
+`argocd-*-metrics` next to them) and here:
 
 ```sh
 kubectl -n auth-prod get servicemonitor,prometheusrule
@@ -249,7 +255,16 @@ done
 
 The alert appears in Prometheus → Alerts (pending → firing), then in
 Alertmanager, and is delivered to the webhook from step 2. Thresholds are
-environment policy: `monitoring.alerts.*` in the overlays.
+environment policy: `monitoring.alerts.*` in the overlays. The platform's own
+rules (OOM kills, unschedulable pods, Traefik, certificates, ArgoCD) are the
+`monitoring-kube-prometheus-platform` PrometheusRule from `charts/monitoring/values.yaml`
+and take the same route.
+
+When something "is low on resources", open **Platform - cluster capacity**
+first: a 4 GB DOKS node leaves 2.5 GiB to pods, and the dashboard shows per
+node what is allocatable, requested and used, which containers exceed their
+request or are throttled, and OOM kills. A pod that stays Pending is the
+autoscaler's cue (`min_nodes`/`max_nodes` in `terraform/`).
 
 ## Rotation
 

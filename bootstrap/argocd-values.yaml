@@ -36,8 +36,16 @@ applicationSet:
 notifications:
   enabled: false
 
-# Requests/limits so the cluster autoscaler and node sizing can account for ArgoCD.
+# Requests/limits so the cluster autoscaler and node sizing can account for
+# ArgoCD. Metrics: the chart's own Services + ServiceMonitors, scraped by the
+# cluster Prometheus (charts/monitoring). The chart renders a ServiceMonitor
+# only once the operator CRDs exist, so the bootstrap install skips them and
+# the self-managed Application (argocd/argocd.yaml) adds them afterwards.
 controller:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
   resources:
     requests:
       cpu: 100m
@@ -46,6 +54,10 @@ controller:
       cpu: "1"
       memory: 2Gi
 server:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
   resources:
     requests:
       cpu: 50m
@@ -54,13 +66,19 @@ server:
       cpu: 500m
       memory: 256Mi
 repoServer:
+  metrics:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+  # Renders kube-prometheus-stack and the operator CRD chart - multi-megabyte
+  # manifests that need more than the usual headroom while helm runs.
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 256Mi
     limits:
       cpu: "1"
-      memory: 512Mi
+      memory: 1Gi
 redis:
   resources:
     requests:

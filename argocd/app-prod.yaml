@@ -24,9 +24,6 @@ spec:
     # the promotion PR into values-prod.yaml, not a manual sync button.
     syncOptions:
       - CreateNamespace=true
-      # ServiceMonitor + PrometheusRule: the operator CRDs may arrive with
-      # infra-monitoring in the same wave (argocd/infra-monitoring.yaml)
-      - SkipDryRunOnMissingResource=true
     managedNamespaceMetadata:
       labels:
         pod-security.kubernetes.io/enforce: restricted

@@ -46,7 +46,7 @@ automated by the `Doks` PowerShell module as
 bootstrap/                  one-time cluster setup: ArgoCD install values,
                             secrets procedure (documented, never committed),
                             backup/restore and rotation runbooks
-argocd/                     synced by the root app (sync-waves -3 … 0):
+argocd/                     synced by the root app (sync-waves -4 … 0):
   kustomization.yaml        what the root app renders; every file below must
                             be listed here or it is not deployed
   sync-defaults.patch       destination.server + syncPolicy shared by every
@@ -58,31 +58,43 @@ argocd/                     synced by the root app (sync-waves -3 … 0):
                             namespaces and cluster-scoped kinds
   project.yaml              AppProject for the env apps: this repo only, two
                             namespaces, explicit list of namespaced kinds
-  infra-traefik.yaml        Traefik ingress controller (official chart, MIT)
-  infra-cert-manager.yaml   cert-manager (official chart, Apache-2.0)
+  infra-monitoring-crds.yaml
+                            charts/monitoring-crds (Prometheus Operator CRDs),
+                            wave -3: before anything renders a ServiceMonitor
+  infra-traefik.yaml        Traefik ingress controller (official chart, MIT);
+                            metrics Service + ServiceMonitor enabled
+  infra-cert-manager.yaml   cert-manager (official chart, Apache-2.0);
+                            ServiceMonitor enabled
   infra-cert-manager-issuer.yaml
                             charts/cert-manager-issuer, wave-ordered after
                             the cert-manager CRDs
   infra-metrics-server.yaml metrics-server (Kubernetes SIG, Apache-2.0)
   infra-monitoring.yaml     charts/monitoring (kube-prometheus-stack)
-  argocd.yaml               ArgoCD reconciling its own installation
+  argocd.yaml               ArgoCD reconciling its own installation (metrics +
+                            ServiceMonitors via bootstrap/argocd-values.yaml)
   app-staging.yaml          charts/auth-stack + values-staging.yaml → auth-staging
   app-prod.yaml             charts/auth-stack + values-prod.yaml   → auth-prod
 charts/cert-manager-issuer/ Let's Encrypt (staging) ClusterIssuer chart;
                             ACME endpoint, email and ingress class in values
+charts/monitoring-crds/     wrapper chart: pins prometheus-operator-crds to the
+                            operator release of charts/monitoring (CI-checked)
 charts/monitoring/          wrapper chart:
   Chart.yaml                pins kube-prometheus-stack (prometheus-community)
   values.yaml               the monitoring stack's own configuration: scrape
-                            targets, retention + storage, Alertmanager routing
-                            and receiver, Grafana provisioning
-  files/dashboards/         the three dashboards of this repo (as code):
-                            user-mgmt-service, auth-stack/Kubernetes, k6 load test
+                            targets, sizing, retention + storage, Alertmanager
+                            routing and receiver, Grafana provisioning, the
+                            platform alert rules
+  files/dashboards/         dashboards as code, one directory per Grafana folder:
+                            auth-stack/ (user-mgmt-service, Kubernetes resources,
+                            k6 load test), platform/ (cluster capacity, edge:
+                            Traefik + cert-manager, ArgoCD)
   templates/dashboards.yaml renders them into sidecar-labelled ConfigMaps
 charts/auth-stack/          wrapper chart:
   Chart.yaml                pins generic-stack (OCI dependency from GHCR)
   values.yaml               DO-common: storageClass, rolling-update policy,
                             resources, seed SQL, ingress + TLS + security
-                            headers, backup, namespace policy defaults
+                            headers, backup, PodMonitors (db, frontend),
+                            namespace policy defaults
   values-staging.yaml       env overlay — CI promotion target (image tags),
                             small HPA/PDB, hosts, quota
   values-prod.yaml          env overlay — promoted via PR; HPA 2–5, PDBs,
@@ -108,15 +120,20 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
 .github/workflows/
   validate.yml              PR/main gate: helm lint + template + kubeconform
                             for both env overlays, the issuer chart, the
-                            monitoring chart and the ArgoCD manifests; builds
+                            monitoring chart, its CRD chart (same operator
+                            release enforced) and the ArgoCD manifests; builds
                             argocd/ with kustomize and asserts the Application
                             invariants on the result (see Design decisions);
-                            every referenced image and the chart dependency
-                            must exist in GHCR and carry a cosign signature
-                            from the CI repo's workflow; uploads the rendered
-                            env manifests (debug aid); builds loadtest/ with
-                            kustomize and kubeconform-checks it; runs
-                            terraform fmt/init/validate (no credentials)
+                            renders Traefik, cert-manager and ArgoCD with the
+                            Applications' values and proves every ServiceMonitor
+                            selects a Service; checks the dashboards (valid
+                            JSON, unique uids); every referenced image and the
+                            chart dependency must exist in GHCR and carry a
+                            cosign signature from the CI repo's workflow;
+                            uploads the rendered env manifests (debug aid);
+                            builds loadtest/ with kustomize and
+                            kubeconform-checks it; runs terraform
+                            fmt/init/validate (no credentials)
 ```
 
 ## Design decisions
@@ -191,18 +208,46 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2):
 * **Observability is one stack for everything** (Aufgabe 7).
   `charts/monitoring` wraps kube-prometheus-stack the same way `auth-stack`
   wraps `generic-stack`; its `values.yaml` is the whole configuration — scrape
-  targets, retention, Alertmanager routing, Grafana provisioning — and the two
-  dashboards are JSON files rendered into sidecar-labelled ConfigMaps, so
-  Grafana needs no PVC and a UI edit never becomes state. DOKS specifics are
-  part of it: the managed control plane and Cilium mean kube-scheduler,
+  targets, sizing, retention, Alertmanager routing, Grafana provisioning, the
+  platform alert rules — and the dashboards are JSON files rendered into
+  sidecar-labelled ConfigMaps (one directory per Grafana folder), so Grafana
+  needs no PVC and a UI edit never becomes state. DOKS specifics are part of
+  it: the managed control plane and Cilium mean kube-scheduler,
   controller-manager, etcd and kube-proxy are switched off instead of failing
-  forever. The environments carry their own `ServiceMonitor` and
-  `PrometheusRule` (thresholds per overlay), Prometheus discovers them only in
-  the namespaces this platform owns, and the alert route matches the
+  forever, and the API-server SLO rule sets — the chart's most expensive —
+  go with them. Every scrape target is declared by its owner: the environments
+  carry their `ServiceMonitor` and `PrometheusRule` (thresholds per overlay)
+  plus `generic-stack` PodMonitors for db and frontend; Traefik, cert-manager
+  and ArgoCD enable their own charts' ServiceMonitors — no selector or port is
+  copied into the monitoring chart, and `validate.yml` renders those charts to
+  prove each monitor selects a Service. Prometheus discovers them only in the
+  namespaces this platform owns, and the alert route matches the
   `service: user-mgmt-service` label, so the application's alerts reach the
   configured webhook receiver. The webhook URL is a Secret read through
   `url_file` — the notification channel follows the same "secrets never touch
   git" rule as everything else.
+* **CRDs first, on their own.** The Prometheus Operator CRDs are their own
+  Application (`charts/monitoring-crds`, wave -3): the charts above render a
+  ServiceMonitor only when the API exists (Traefik's chart fails, ArgoCD's
+  silently skips), and auto-sync does not retry a revision that failed once —
+  so the API is guaranteed before wave -2, while Prometheus itself stays at
+  wave 0 where a pod that cannot schedule gates nothing. The wrapper pins the
+  CRD chart to the operator release of `charts/monitoring`; `validate.yml`
+  refuses a mismatch and renovate bumps both in one PR.
+* **Sized for the pool, honestly.** A 4 GB DOKS node leaves 2.5 GiB to pods;
+  two of them hold the platform, both environments and the observability
+  stack only if every request is what the process really needs — a Prometheus
+  requesting 768Mi while using a gigabyte is the first pod evicted under
+  pressure, an unbounded sidecar is budget nobody counted. Requests are
+  therefore set at what these processes need on a cluster of this size
+  (Prometheus 1Gi with a 2Gi limit, Grafana 256Mi/512Mi, the ArgoCD
+  repo-server 256Mi with 1Gi for rendering kube-prometheus-stack), every
+  sidecar has limits, and the `Platform - cluster capacity` dashboard shows
+  allocatable vs. requested vs. used per node, OOM kills and throttling, with
+  `ContainerOOMKilled` and `PodUnschedulable` as the alerts. With everything
+  running the two nodes are roughly 90 % committed: the lever is a third node
+  from the autoscaler (`min_nodes`/`max_nodes` in `terraform/`) or
+  `s-4vcpu-8gb` nodes (6 GiB allocatable), not smaller requests.
 * **Backups are part of the deployment.** A `pg_dump` CronJob per environment
   (stack's own PostgreSQL image, same major version) writes to a dedicated
   PVC with retention; restore and volume-snapshot procedure in
@@ -303,13 +348,19 @@ helm lint charts/cert-manager-issuer --strict
 helm dependency build charts/monitoring
 helm lint charts/monitoring --strict
 helm template monitoring charts/monitoring --namespace monitoring --include-crds
+helm dependency build charts/monitoring-crds
+helm lint charts/monitoring-crds --strict
+helm template infra-monitoring-crds charts/monitoring-crds --namespace monitoring --include-crds
 
 kustomize build argocd/            # what the root app actually applies
 ```
 
 Same steps run in CI (`validate.yml`) for both environments, plus
-`kubeconform` against the cluster's Kubernetes version and cosign
-verification of every referenced artifact.
+`kubeconform` against the cluster's Kubernetes version, cosign verification
+of every referenced artifact, the operator-release lock between the two
+monitoring charts, the dashboard check (valid JSON, unique uids) and the
+ServiceMonitor conformance of the platform charts (Traefik, cert-manager,
+ArgoCD rendered with their Applications' values).
 
 `validate.yml` gates `argocd/` with plain `kustomize`/`yq`/`jq`, so a red run
 reproduces locally by copying the step body out of the workflow. Note that
@@ -328,12 +379,12 @@ visible merged.
 | 4 Pipeline | CI repo `build.yml`: build/scan/sign/publish on push, immutable version tag + unique `tree-<git tree hash>` tag per source state, registry login via `GITHUB_TOKEN`, no imperative deploy, no cluster credentials; `validate.yml` here is deploy-free; the CI `promote` job commits tag bumps here as PRs (staging auto-merged on green checks, prod human-merged) |
 | 5 Namespaces | `values-*.yaml` overlays, `templates/resourcequota.yaml`, `limitrange.yaml`, `networkpolicy.yaml`, PSA labels in `argocd/app-*.yaml` |
 | 6 Scaling | HPA/PDB/RollingUpdate/anti-affinity via `generic-stack`, thresholds in the overlays; liveness/readiness/startup probes on every component; Traefik round-robins the Ingress over ready endpoints only; TLS via cert-manager; metrics-server infra app |
-| 7 Monitoring | kube-prometheus-stack in ns `monitoring` via `argocd/infra-monitoring.yaml` + `charts/monitoring` (its `values.yaml` is the whole configuration); per-pod CPU/memory from the kubelet + kube-state-metrics; `charts/auth-stack/templates/servicemonitor.yaml` scrapes the backend's admin port (request rate, response time, error rate); `prometheusrule.yaml` defines the alerts and the Alertmanager route in `charts/monitoring/values.yaml` forwards them to the webhook receiver; two dashboards in `charts/monitoring/files/dashboards/`; verification steps in `bootstrap/README.md` step 10 |
+| 7 Monitoring | kube-prometheus-stack in ns `monitoring` via `argocd/infra-monitoring.yaml` + `charts/monitoring` (its `values.yaml` is the whole configuration); per-pod CPU/memory from the kubelet + kube-state-metrics; `charts/auth-stack/templates/servicemonitor.yaml` scrapes the backend's admin port (request rate, response time, error rate); `prometheusrule.yaml` defines the alerts and the Alertmanager route in `charts/monitoring/values.yaml` forwards them to the webhook receiver; dashboards in `charts/monitoring/files/dashboards/` (`auth-stack/`: user-mgmt-service, Kubernetes resources, k6; `platform/`: cluster capacity, edge, ArgoCD); the platform apps are scraped through their charts' ServiceMonitors and covered by the `monitoring-kube-prometheus-platform` rules; verification steps in `bootstrap/README.md` step 10 |
 
 ## Task mapping (Tooling block, VSC_Observability)
 
 | Aufgabe | Where |
 |---|---|
-| 1 Observability | see "7 Monitoring" above: kube-prometheus-stack in ns `monitoring`, per-pod CPU/memory, backend ServiceMonitor (request rate, response time, error rate), two dashboards, PrometheusRule + Alertmanager webhook, all in `charts/monitoring/values.yaml` |
+| 1 Observability | see "7 Monitoring" above: kube-prometheus-stack in ns `monitoring`, per-pod CPU/memory, backend ServiceMonitor (request rate, response time, error rate), the dashboards under `charts/monitoring/files/dashboards/`, PrometheusRule + Alertmanager webhook, all configured in `charts/monitoring/values.yaml` |
 | 2 Chaos Testing | `loadtest/`: k6 as a Kubernetes Job with `scripts/user-mgmt-service.js` (ramping load on `/api/login` + `/api/me`); k6 metrics via remote write into Prometheus, dashboard `k6 load test` (VUs/RPS/p95 next to server-side rate/latency, HPA desired vs. current, CPU vs. target, requests per backend pod); HPA scale-up/down and availability procedure in `loadtest/README.md` |
 | 3 Terraform IaC | `terraform/`: DigitalOcean provider, `imports.tf` import block, `generated.tf` from `terraform plan -generate-config-out` (cleaned, header lists the edits), `variables.tf`, token via `DIGITALOCEAN_TOKEN` only, `terraform fmt`/`validate` in `validate.yml`, `plan` empty for the running cluster (`terraform/README.md`) |

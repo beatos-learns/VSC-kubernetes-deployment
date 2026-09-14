@@ -8,7 +8,7 @@ kind: AppProject
 metadata:
   name: infra
   annotations:
-    argocd.argoproj.io/sync-wave: "-3"
+    argocd.argoproj.io/sync-wave: "-4"
 spec:
   description: Cluster platform (ingress controller, certificates, metrics, monitoring, ArgoCD)
   sourceRepos:
