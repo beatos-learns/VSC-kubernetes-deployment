@@ -16,3 +16,4 @@ spec:
       - http01:
           ingress:
             ingressClassName: {{ .Values.ingressClassName }}
+            serviceType: ClusterIP # auth-stack quota forbids NodePort services; Traefik is the only edge
