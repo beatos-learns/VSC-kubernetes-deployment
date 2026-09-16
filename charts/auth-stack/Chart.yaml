@@ -4,11 +4,12 @@ description: >-
   Environment wrapper around the generic-stack chart published by
   VSC-kubernetes-containers. Pins the chart version, carries the
   per-environment values overlays, and adds namespace policy
-  (ResourceQuota, NetworkPolicies) that is a deployment concern,
-  not an application concern.
+  (ResourceQuota, NetworkPolicies), the schema seeds of both managed
+  databases and the scrape/alert policy - deployment concerns,
+  not application concerns.
 type: application
-version: 0.2.0
+version: 0.3.0
 dependencies:
   - name: generic-stack
-    version: "0.0.4"
+    version: "0.0.5"
     repository: oci://ghcr.io/beatos-learns/vsc-kubernetes-containers/charts

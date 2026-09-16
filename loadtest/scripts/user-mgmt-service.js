@@ -1,9 +1,11 @@
 // k6 load test for the user-mgmt-service (Aufgabe 2, Chaos Testing).
 //
 // Path under test: the environment's public host -> DO load balancer ->
-// Traefik -> frontend /api proxy -> backend Service -> backend replicas -> db.
+// Traefik -> frontend /api proxy -> backend Service -> backend replicas -> db,
+// and the module branch: Traefik -> backend /modules -> module service -> MySQL.
 // Every iteration is one user session: log in (bcrypt on the backend - the CPU
-// work the HPA scales on) and read the own profile with the session cookie.
+// work the HPA scales on), read the own profile with the session cookie, list
+// the modules through the backend.
 //
 // Inputs (environment of the Job, loadtest/job.yaml):
 //   TARGET_URL           https://auth-staging.<lb-ip>.nip.io  (required)
@@ -52,6 +54,7 @@ export const options = {
     http_req_failed: ['rate<0.05'], // < 5 % transport/HTTP errors (4xx/5xx)
     'http_req_duration{name:login}': ['p(95)<2000'], // staging alert threshold
     'http_req_duration{name:me}': ['p(95)<1000'],
+    'http_req_duration{name:modules}': ['p(95)<2000'], // backend auth (~1.2 s user load) + the module service hop
     checks: ['rate>0.95'],
   },
   summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
@@ -103,6 +106,20 @@ export default function () {
   check(me, {
     'me: HTTP 200': (r) => r.status === 200,
     'me: own profile': (r) => r.status === 200 && r.json('email') === EMAIL,
+  });
+
+  // The module branch (Aufgabe 6): the backend's /modules is served by the
+  // module service (timeout, retry, circuit breaker) from its own MySQL. The
+  // frontend's `jwt` cookie holds the backend's own token, so the call goes
+  // straight to the API on the same host.
+  const jwt = login.cookies.jwt ? login.cookies.jwt[0].value : '';
+  const modules = http.get(`${BASE_URL}/modules`, {
+    headers: { Authorization: `Bearer ${jwt}` },
+    tags: { name: 'modules' },
+  });
+  check(modules, {
+    'modules: HTTP 200': (r) => r.status === 200,
+    'modules: list from the module service': (r) => r.status === 200 && Array.isArray(r.json()) && r.json().length > 0,
   });
 
   sleep(1); // think time: ~1 login/s per VU at the plateau

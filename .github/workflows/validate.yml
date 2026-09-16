@@ -123,18 +123,32 @@ jobs:
             rendered-${{ matrix.environment }}.yaml > namespaced-${{ matrix.environment }}.yaml
           ./kyverno-cli apply policies.yaml --resource namespaced-${{ matrix.environment }}.yaml --remove-color
 
-      # A promotion may only merge when every referenced image exists in GHCR
-      # and was signed by the CI repo's build workflow (keyless, Rekor-logged).
+      # A promotion may only merge when every referenced image exists and, for
+      # the CI registry, was signed by the CI repo's build workflow (keyless,
+      # Rekor-logged). The one image from elsewhere - the MySQL client of the
+      # module service's seed Job - is admitted by digest only, exactly as
+      # charts/policies (images.mysqlClient) admits it at the cluster.
       - name: Verify image references exist and are signed
         run: |
           set -euo pipefail
+          registry=$(./yq -N '.images.registry' charts/policies/values.yaml)
+          client=$(./yq -N '.images.mysqlClient' charts/policies/values.yaml)
           refs=$(grep -hoE '^\s+image: *"?[^" ]+' rendered-${{ matrix.environment }}.yaml | sed -E 's/^\s+image: *"?//' | sort -u)
           [ -n "$refs" ] || { echo "::error::no image references found"; exit 1; }
           for ref in $refs; do
-            skopeo inspect --no-tags "docker://$ref" >/dev/null
-            cosign verify --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
-              --certificate-identity-regexp "$COSIGN_IDENTITY_RE" "$ref" >/dev/null
-            echo "$ref: exists, signature OK"
+            case "$ref" in
+              "$registry"/*)
+                skopeo inspect --no-tags "docker://$ref" >/dev/null
+                cosign verify --certificate-oidc-issuer "$COSIGN_OIDC_ISSUER" \
+                  --certificate-identity-regexp "$COSIGN_IDENTITY_RE" "$ref" >/dev/null
+                echo "$ref: exists, signature OK" ;;
+              "$client":*@sha256:*)
+                # skopeo takes a tag or a digest, not both: the digest is what pins the image
+                skopeo inspect --no-tags "docker://$client@${ref##*@}" >/dev/null
+                echo "$ref: exists, pinned by digest (the seed client charts/policies admits)" ;;
+              *)
+                echo "::error::$ref is neither from $registry nor the digest-pinned $client"; exit 1 ;;
+            esac
           done
 
   argocd-manifests:

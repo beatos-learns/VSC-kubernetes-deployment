@@ -1,0 +1,139 @@
+{{- with .Values.mysqlSeed }}
+{{- if .enabled }}
+{{/*
+  Schema seed of the module service as an ArgoCD PreSync hook (Aufgabe 6):
+  the mysql client applies every file in mysqlSeed.files to the managed MySQL
+  before each sync, as the cluster admin, over TLS in the mode the module
+  service itself uses (components.modules.env.MYSQL_SSL_MODE / MYSQL_SSL_CA).
+  Endpoint, admin credentials and the cluster CA come from the environment
+  Secret (bootstrap/README.md step 2). BeforeHookCreation keeps the last
+  run's Job and log until the next sync.
+*/}}
+{{- $gs := index $.Values "generic-stack" }}
+{{- $modules := $gs.components.modules }}
+{{- $name := printf "%s-mysql-seed" $.Release.Name }}
+{{- $image := printf "%s/%s:%s@%s" .image.registry .image.repository (toString .image.tag) .image.digest }}
+{{- $secret := tpl $modules.existingSecret $ }}
+{{- $sslMode := $modules.env.MYSQL_SSL_MODE | default "preferred" | upper | replace "-" "_" }}
+{{- $sslCa := $modules.env.MYSQL_SSL_CA | default "" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: mysql-seed
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+data:
+  {{- range $file, $content := .files }}
+  {{ $file }}: |-
+    {{- $content | nindent 4 }}
+  {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: mysql-seed
+    {{- include "auth-stack.labels" $ | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mysql-seed # selected by templates/networkpolicy.yaml
+        {{- include "auth-stack.labels" $ | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999 # the image's own mysql user
+        runAsGroup: 999
+        fsGroup: 999
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mysql
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-euo", "pipefail", "-c"] # the image ENTRYPOINT is the server
+          args:
+            - |
+              umask 077
+              printf '[client]\nuser=%s\npassword="%s"\n' "${MYSQL_USER}" "$(cat /run/secrets/mysql-admin-password)" > /tmp/client.cnf
+              for f in /seed/*.sql; do
+                echo "applying ${f##*/} to ${MYSQL_DATABASE}@${MYSQL_HOST} as ${MYSQL_USER}"
+                mysql --defaults-extra-file=/tmp/client.cnf --host="${MYSQL_HOST}" --port="${MYSQL_PORT}" \
+                  --ssl-mode={{ $sslMode }}{{ if hasPrefix "VERIFY" $sslMode }} --ssl-ca={{ $sslCa }}{{ end }} \
+                  --connect-timeout=10 "${MYSQL_DATABASE}" < "${f}"
+              done
+          env:
+            - name: MYSQL_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: mysql-host
+            - name: MYSQL_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: mysql-port
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: mysql-name
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: mysql-admin-user
+            - name: HOME
+              value: /tmp
+            - name: MYSQL_HISTFILE
+              value: /dev/null
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+          volumeMounts:
+            - name: seed
+              mountPath: /seed
+              readOnly: true
+            - name: secret
+              mountPath: /run/secrets
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: seed
+          configMap:
+            name: {{ $name }}
+        - name: secret
+          secret:
+            secretName: {{ $secret }}
+            items:
+              - key: mysql-admin-password
+                path: mysql-admin-password
+              {{- if hasPrefix "VERIFY" $sslMode }}
+              - key: {{ base $sslCa }}
+                path: {{ base $sslCa }}
+              {{- end }}
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {}
+{{- end }}
+{{- end }}

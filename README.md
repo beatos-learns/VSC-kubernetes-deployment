@@ -5,7 +5,7 @@ GitOps **Ops repository** for the auth stack built in
 (CI repo: images + the `generic-stack` Helm chart, published to GHCR as signed
 OCI artifacts). This repo declares *what runs where* on a DigitalOcean
 Kubernetes (DOKS) cluster: environment values, ArgoCD Application manifests,
-namespace and cluster policy, and the cluster with its managed database as
+namespace and cluster policy, and the cluster with its managed databases as
 Terraform code.
 
 TEKO «Verteilte Systeme, Containerisierung» — Orchestrierung and the Tooling
@@ -36,7 +36,9 @@ the end map both).
                                                        ├─ ns auth-staging    release "auth"
                                                        └─ ns auth-prod       release "auth"
                                                      DigitalOcean Managed PostgreSQL (terraform/)
-                                                       └─ auth_staging, auth_prod  ◄─ VPC + TLS ─ backends, seed Jobs
+                                                       └─ auth_staging, auth_prod        ◄─ VPC + TLS ─ backends, seed Jobs
+                                                     DigitalOcean Managed MySQL (terraform/)
+                                                       └─ modules_staging, modules_prod  ◄─ VPC + TLS ─ module services, seed Jobs
 ```
 
 Nothing in either repo runs `kubectl apply` or `helm upgrade` against the
@@ -49,7 +51,7 @@ New-DoksCluster | Sync-DoksTerraform | Bootstrap-DoksCluster; Connect-DoksPortFo
 ```
 
 `New-DoksCluster` creates the cluster, `Sync-DoksTerraform` adopts it into
-`terraform/` and creates the managed database, `Bootstrap-DoksCluster` hands
+`terraform/` and creates the managed databases, `Bootstrap-DoksCluster` hands
 it to ArgoCD and writes the load balancer IP into the nip.io hosts, and
 `Connect-DoksPortForward` opens every UI on localhost with its credentials
 (`Doks/README.md`). The cluster facts the line writes (`terraform.tfvars`, the
@@ -104,13 +106,15 @@ charts/monitoring/          wrapper chart:
                             routing and receiver, Grafana provisioning, the
                             platform alert rules
   files/dashboards/         dashboards as code, one directory per Grafana folder:
-                            auth-stack/ (user-mgmt-service, auth-portal, request
-                            flow, Kubernetes resources, k6 load test), platform/ (cluster capacity, edge:
+                            auth-stack/ (user-mgmt-service, auth-portal,
+                            module-service, request flow, Kubernetes resources,
+                            k6 load test), platform/ (cluster capacity, edge:
                             Traefik + cert-manager, ArgoCD)
   templates/dashboards.yaml renders them into sidecar-labelled ConfigMaps
 charts/policies/            the cluster's ClusterPolicies (Aufgabe 5, Kyverno):
   values.yaml               application namespaces, the CI registry path, the
-                            signing identity (same regex as validate.yml)
+                            digest-only MySQL seed client, the signing identity
+                            (same regex as validate.yml)
   templates/                require-resources (every namespace),
                             require-probes, require-labels, restrict-images,
                             verify-image-signatures (application namespaces)
@@ -120,9 +124,11 @@ charts/policies/            the cluster's ClusterPolicies (Aufgabe 5, Kyverno):
 charts/auth-stack/          wrapper chart:
   Chart.yaml                pins generic-stack (OCI dependency from GHCR)
   values.yaml               DO-common: the disabled db component, datasource
-                            wiring from the Secret, resources, seed SQL,
-                            ingress + TLS + security headers, chart-wide
-                            monitoring (access logs), namespace policy defaults
+                            wiring from the Secret, the module service's
+                            MySQL wiring (URL + CA from the Secret), resources,
+                            both seed SQLs, ingresses (frontend, backend API)
+                            + TLS + security headers, chart-wide monitoring
+                            (access logs), namespace policy defaults
   values-staging.yaml       env overlay — CI promotion target (image tags),
                             small HPA/PDB, hosts, quota
   values-prod.yaml          env overlay — promoted via PR; HPA 2–5, PDBs,
@@ -131,19 +137,21 @@ charts/auth-stack/          wrapper chart:
   templates/                namespace + edge policy: ResourceQuota, LimitRange,
                             NetworkPolicies (default-deny in/out + explicit
                             flows), Traefik security-headers Middleware,
-                            schema seed Job (ArgoCD PreSync hook, psql against
-                            the managed database), one PodMonitor per
-                            component + PrometheusRule (backend, frontend,
-                            the hop between them, health checks)
+                            schema seed Jobs (ArgoCD PreSync hooks: psql
+                            against the managed PostgreSQL, mysql against the
+                            managed MySQL), one PodMonitor per component +
+                            PrometheusRule (backend, frontend, module service,
+                            the hops between them, health checks)
 Doks/                       PowerShell module: create/connect/delete the
                             throwaway DOKS cluster and run the bootstrap once
-                            Terraform has created the database; see
+                            Terraform has created the databases; see
                             Doks/README.md
-terraform/                  the DOKS cluster (adopted, Aufgabe 3 Terraform) and
-                            the managed PostgreSQL (created, Aufgabe 4 Managed
-                            Ressources) as code:
-                            provider, import block, cluster resource, database
-                            + roles + firewall, variables, outputs that feed
+terraform/                  the DOKS cluster (adopted, Aufgabe 3 Terraform), the
+                            managed PostgreSQL (created, Aufgabe 4 Managed
+                            Ressources) and the managed MySQL of the module
+                            service (created, Aufgabe 6 Microservices) as code:
+                            provider, import block, cluster resource, databases
+                            + roles + firewalls, variables, outputs that feed
                             the Secrets; token via environment only; see
                             terraform/README.md
 loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos Testing):
@@ -167,9 +175,10 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos T
                             document); the policies' signing identity must
                             equal the workflow's; checks the dashboards
                             (valid JSON, unique uids); every referenced image
-                            and the chart dependency must exist in GHCR and
-                            carry a cosign signature from the CI repo's
-                            workflow; uploads the rendered env manifests
+                            and the chart dependency must exist and carry a
+                            cosign signature from the CI repo's workflow (the
+                            MySQL seed client: exist and be digest-pinned, as
+                            the policies admit it); uploads the rendered env manifests
                             (debug aid); builds loadtest/ with kustomize and
                             kubeconform-checks it; runs terraform
                             fmt/init/validate (no credentials)
@@ -199,9 +208,10 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos T
   production rate limit is shared with every nip.io user. cert-manager:
   Apache-2.0, CNCF; Let's Encrypt: ISRG (US non-profit) — accepted as
   passive self-hosted exceptions.
-* **Secrets never touch git.** The managed database's endpoint and login
-  role (`terraform output`; keys `db-url`, `db-user`, `db-password`), the
-  seed Job's admin credentials and the random `jwt-secret` are created
+* **Secrets never touch git.** The managed databases' endpoints and login
+  roles (`terraform output`; keys `db-url`, `db-user`, `db-password` for the
+  backend, `database-url` + `mysql-ca` for the module service), the seed
+  Jobs' admin credentials and the random `jwt-secret` are created
   out-of-band per namespace from a manifest on stdin (never on a command
   line) and referenced via `existingSecret`; each pod receives only the keys
   it names. Rotation runbook in `bootstrap/README.md`. Sealed Secrets
@@ -232,7 +242,10 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos T
   version tags (a source change without a tag bump fails its build), signs
   every image and chart keylessly (cosign, GitHub OIDC, Rekor) and attaches
   SBOM attestations; `validate.yml` refuses any reference that does not
-  exist or is not signed by that workflow. Actions are pinned to commit SHAs,
+  exist or is not signed by that workflow. The one image from elsewhere, the
+  MySQL client of the module service's seed Job (Docker's official image,
+  the stack ships no MySQL), is admitted by digest only - by `validate.yml`
+  and by `restrict-images` alike. Actions are pinned to commit SHAs,
   downloaded tools are checksum-verified.
 * **Policy as code, enforced twice** (Aufgabe 5, Kyverno). Kyverno runs in the
   `policy` namespace (`argocd/infra-kyverno.yaml`); the ClusterPolicies are a
@@ -241,7 +254,8 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos T
   applies to every namespace Kyverno watches and fails open - hygiene must
   never keep the platform's own pods from being rescheduled. In the
   application namespaces `require-probes`, `require-labels`,
-  `restrict-images` (the CI registry only, tag or digest, never `latest`) and
+  `restrict-images` (the CI registry only - plus the digest-pinned MySQL seed
+  client - tag or digest, never `latest`) and
   `verify-image-signatures` (keyless cosign, the identity `validate.yml`
   checks) fail closed. The admission webhook is the enforcement; the same
   policies also run in CI through the Kyverno CLI, so a violation surfaces on
@@ -262,7 +276,9 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos T
 * **Namespace policy is complete, not decorative.** ResourceQuota (CPU,
   memory, pods, storage, PVC count, no LoadBalancers/NodePorts), LimitRange,
   default-deny ingress **and** egress with explicit flows
-  (edge → frontend → backend → managed database, seed Job → managed database, DNS, ACME solver, metrics),
+  (edge → frontend → backend → managed PostgreSQL, edge → backend API,
+  backend → module service → managed MySQL, each seed Job → its database,
+  DNS, ACME solver, metrics),
   Pod Security Admission `restricted` enforced on the namespace, and an
   AppProject that whitelists exactly the kinds the chart renders — no RBAC,
   no Secrets — so a values PR cannot escalate.
@@ -284,9 +300,9 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos T
   Kyverno and ArgoCD enable their own charts' ServiceMonitors — no selector or
   port is copied into the monitoring chart, and `validate.yml` renders those
   charts to prove each monitor selects a Service. Prometheus discovers them only in the
-  namespaces this platform owns, and the alert route matches the
-  `service: user-mgmt-service` label, so the application's alerts reach the
-  configured webhook receiver. The webhook URL is a Secret read through
+  namespaces this platform owns, and the alert route matches the `service`
+  label (`user-mgmt-service`, `auth-portal`, `module-service`, `auth-stack`),
+  so the application's alerts reach the configured webhook receiver. The webhook URL is a Secret read through
   `url_file` — the notification channel follows the same "secrets never touch
   git" rule as everything else.
 * **CRDs first, on their own.** The Prometheus Operator CRDs are their own
@@ -325,6 +341,29 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos T
   same file is the migration path. The application connects exclusively
   through the connection data in its Secret, over TLS, to the private
   endpoint; the NetworkPolicy opens exactly that flow.
+* **The module service is a second service with its own database** (Aufgabe 6,
+  Microservices). `generic-stack` 0.0.5 adds the `modules` component (the
+  FastAPI module_service compiled to a native binary) and wires the backend
+  to it through `MODULE_SERVICE_URL` = the modules Service of the release;
+  the backend's client carries timeouts, retries and a circuit breaker, so a
+  module-service outage degrades into `503` on the module endpoints only.
+  Its data lives in a second DigitalOcean Managed Database, MySQL
+  (`terraform/database.tf`, same shape: VPC-private, database + role per
+  environment, cluster-only firewall), reached with `verify-identity` TLS
+  against the cluster CA. The backend has no path to that database: its
+  Secret projection holds no MySQL key (only the modules pods mount
+  `database-url` and `mysql-ca`), and the NetworkPolicy gives the backend
+  exactly two egress flows, PostgreSQL and the modules pods. The upstream
+  `schema.sql` is applied by a second PreSync hook
+  (`templates/mysql-seed-job.yaml`) with the official MySQL client image,
+  pinned by digest - the one deliberate exception to "images from the CI
+  registry only", declared in `charts/policies` and checked by `validate.yml`.
+  The service scales vertically: fixed replicas, CPU/memory limits sized in
+  `values.yaml`, and the **module-service** dashboard shows usage against
+  the limits next to request rate, response time, error rate, the hop from
+  the backend and the MySQL statements. The backend API is exposed on the
+  environment's host (`/users`, `/modules`) so a client can drive the whole
+  chain; `bootstrap/README.md` step 12 walks it end to end.
 * **Blast radius.** The root app does not prune and carries no finalizer;
   infra apps carry no finalizer either — removing a manifest never cascades
   into deleting the load balancer or an environment. ArgoCD is version-pinned
@@ -362,12 +401,14 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos T
 | Promotion | PR by CI (`promote/staging`), auto-merged on green validate | PR by CI (`promote/prod`), human-merged |
 | Backend | HPA 1–2 @ 70 % CPU, PDB `maxUnavailable: 1` | HPA 2–5 @ 70 % CPU (scale-down 1 pod / 60 s after 5 min), PDB `maxUnavailable: 1`, `ddl-auto: validate` |
 | Frontend | 1 replica, PDB | 2 replicas, PDB `maxUnavailable: 1` |
+| Module service | 1 replica, PDB; sized vertically (100m–500m CPU, 96–256Mi) | 2 replicas, PDB `maxUnavailable: 1`; same limits |
 | Rollouts | RollingUpdate `maxUnavailable: 0` / `maxSurge: 1`, `minReadySeconds: 5`, hostname anti-affinity | same |
-| Quota (req / lim CPU) | 1 / 3 | 2 / 5 |
+| Quota (req / lim CPU) | 1 / 4 | 2 / 6 |
 | Quota (req / lim memory) | 1Gi / 2Gi | 2Gi / 4Gi |
-| Quota (storage / PVCs / pods) | 0 / 0 / 10 | 0 / 0 / 20 |
+| Quota (storage / PVCs / pods) | 0 / 0 / 12 | 0 / 0 / 20 |
 | Database | managed PostgreSQL: database + role `auth_staging` | managed PostgreSQL: database + role `auth_prod` (same cluster; DigitalOcean daily backups + PITR) |
-| Host | `auth-staging.<lb-ip>.nip.io` | `auth-prod.<lb-ip>.nip.io` |
+| Module database | managed MySQL: database + role `modules_staging` | managed MySQL: database + role `modules_prod` (same cluster) |
+| Host | `auth-staging.<lb-ip>.nip.io` (frontend; `/users`, `/modules` → backend) | `auth-prod.<lb-ip>.nip.io` (same) |
 | TLS secret | `auth-staging-tls` | `auth-prod-tls` (both Let's Encrypt staging) |
 | Isolation | default-deny in/out, explicit flows, PSA restricted, Kyverno policies (`charts/policies`) | same |
 | Alert thresholds | 5xx > 10 %, p95 > 2 s, rejected logins > 1/s | 5xx > 2 %, p95 > 0.8 s, rejected logins > 0.2/s |
@@ -383,7 +424,7 @@ default branch, after every image and the chart are published **and signed**:
    credentials exist in GitHub.
 2. Sets `components.<name>.image.tag` in both overlays to what the CI tree
    builds — only for the components the overlays manage (`db`, `backend`,
-   `frontend`; the anchored `# promoted …` lines are edited in place) — and,
+   `frontend`, `modules`; the anchored `# promoted …` lines are edited in place) — and,
    when the CI repo published a new `generic-stack` version, pins it in
    `Chart.yaml` and refreshes `Chart.lock`.
 3. Branch `promote/staging` (`values-staging.yaml` + chart pin): one commit
@@ -465,7 +506,7 @@ in the working tree on any platform (it overrides `core.autocrlf`).
 | 4 Pipeline | CI repo `build.yml`: build/scan/sign/publish on push, immutable version tag + unique `tree-<git tree hash>` tag per source state, registry login via `GITHUB_TOKEN`, no imperative deploy, no cluster credentials; `validate.yml` here is deploy-free; the CI `promote` job commits tag bumps here as PRs (staging auto-merged on green checks, prod human-merged) |
 | 5 Namespaces | `values-*.yaml` overlays, `templates/resourcequota.yaml`, `limitrange.yaml`, `networkpolicy.yaml`, PSA labels in `argocd/app-*.yaml` |
 | 6 Scaling | HPA/PDB/RollingUpdate/anti-affinity via `generic-stack`, thresholds in the overlays; liveness/readiness/startup probes on every component; Traefik round-robins the Ingress over ready endpoints only; TLS via cert-manager; metrics-server infra app |
-| 7 Monitoring | kube-prometheus-stack in ns `monitoring` via `argocd/infra-monitoring.yaml` + `charts/monitoring` (its `values.yaml` is the whole configuration); per-pod CPU/memory from the kubelet + kube-state-metrics; `charts/auth-stack/templates/podmonitor.yaml` scrapes every component's admin port (backend: routes, database hop, JVM; frontend: routes, the frontend -> backend hop, Go runtime; both: the images' health checks); `prometheusrule.yaml` defines the alerts (backend errors/latency/logins/pool, frontend errors/hop, failing health checks) and the Alertmanager route in `charts/monitoring/values.yaml` forwards them to the webhook receiver; dashboards in `charts/monitoring/files/dashboards/` (`auth-stack/`: user-mgmt-service, auth-portal, request flow, Kubernetes resources, k6; `platform/`: cluster capacity, edge, ArgoCD); the platform apps are scraped through their charts' ServiceMonitors and covered by the `monitoring-kube-prometheus-platform` rules; verification steps in `bootstrap/README.md` step 10 |
+| 7 Monitoring | kube-prometheus-stack in ns `monitoring` via `argocd/infra-monitoring.yaml` + `charts/monitoring` (its `values.yaml` is the whole configuration); per-pod CPU/memory from the kubelet + kube-state-metrics; `charts/auth-stack/templates/podmonitor.yaml` scrapes every component's admin port (backend: routes, database hop, the backend -> modules hop, JVM; frontend: routes, the frontend -> backend hop, Go runtime; module service: routes, MySQL statements, Python runtime; all: the images' health checks); `prometheusrule.yaml` defines the alerts (backend errors/latency/logins/pool/module hop, frontend errors/hop, module service down/errors/latency, failing health checks) and the Alertmanager route in `charts/monitoring/values.yaml` forwards them to the webhook receiver; dashboards in `charts/monitoring/files/dashboards/` (`auth-stack/`: user-mgmt-service, auth-portal, module-service, request flow, Kubernetes resources, k6; `platform/`: cluster capacity, edge, ArgoCD); the platform apps are scraped through their charts' ServiceMonitors and covered by the `monitoring-kube-prometheus-platform` rules; verification steps in `bootstrap/README.md` step 10 |
 
 ## Task mapping (Tooling block, VSC_Observability)
 
@@ -476,3 +517,4 @@ in the working tree on any platform (it overrides `core.autocrlf`).
 | 3 Terraform IaC | `terraform/`: DigitalOcean provider, `imports.tf` import block, `generated.tf` from `terraform plan -generate-config-out` (cleaned; its header states what is omitted and why), `variables.tf`, token via `DIGITALOCEAN_TOKEN` only, `terraform fmt`/`validate` in `validate.yml`, `plan` empty for the running cluster (`terraform/README.md`) |
 | 4 Managed Ressources | `terraform/database.tf`: DigitalOcean Managed PostgreSQL (cluster in the DOKS VPC, database + login role per environment, firewall for the Kubernetes cluster) provisioned with the DigitalOcean provider, outputs `database` / `database_credentials`; `charts/auth-stack`: db component disabled (no pod, Service or PVC; quota allows none), the backend reads `db-url`/`db-user`/`db-password` from the `auth-stack-secrets` Secret only, schema via the PreSync seed Job (`templates/db-seed-job.yaml`); procedure in `terraform/README.md` and `bootstrap/README.md` step 2 |
 | 5 Kyverno Policy as Code | `argocd/infra-kyverno.yaml`: Kyverno via its Helm chart in the dedicated `policy` namespace (wave -2; ServiceMonitors, dashboard); `charts/policies` + `argocd/infra-policies.yaml`: five ClusterPolicies as code (require-resources, require-probes, require-labels, restrict-images, verify-image-signatures), synced one wave after Kyverno; `charts/policies/tests/violations.yaml`: the deliberately invalid Deployments, rejected by the Kyverno CLI in `validate.yml` (one policy per document) and by the admission webhook on the cluster (`bootstrap/README.md` step 11) |
+| 6 Microservices | `charts/auth-stack`: `generic-stack` 0.0.5 with the `modules` component (module-service 0.0.1, user-mgmt-service 0.0.4 with the module endpoints and its REST client with timeout/retry/circuit breaker, wired to the modules Service by the chart), `values.yaml` `components.modules` (MySQL URL + CA from the Secret, `verify-identity` TLS, CPU/memory limits - vertical scaling), `templates/networkpolicy.yaml` (backend → modules → MySQL; the backend has no MySQL credentials and no flow to it), `templates/mysql-seed-job.yaml` + `mysqlSeed.files` (upstream `schema.sql` as a PreSync hook), the backend API on the environment's host for the end-to-end call (`bootstrap/README.md` step 12: 200 / 404 / 409 / 503); `terraform/database.tf`: DigitalOcean Managed MySQL (cluster, database + role per environment, firewall, CA) with outputs `modules_database` / `modules_database_credentials`; `templates/podmonitor.yaml` scrapes the module service (the per-pod form of a ServiceMonitor, same operator API), `prometheusrule.yaml` its alerts and the backend's module-hop alerts, dashboard `module-service` (request rate, response time, error rate, the hop, MySQL, usage vs. limits) + the module branch in `request flow`; the module service passes the same ClusterPolicies (`validate.yml` renders both environments through the Kyverno CLI); the CI repo's `build.yml` builds, signs and publishes `module-service` and its `promote` job bumps the `modules` tag lines here like every other component; `loadtest/` calls `/modules` per session |

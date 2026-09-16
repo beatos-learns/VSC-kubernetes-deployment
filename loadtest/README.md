@@ -2,11 +2,12 @@
 
 k6 runs **inside the cluster** as a Kubernetes Job and puts controlled,
 rising load on the user-mgmt-service through its public path (load balancer
-→ Traefik → frontend `/api` proxy → backend replicas). The run is observed
-from two sides: k6 pushes its client-side metrics into the cluster Prometheus
-(remote write), and the backend's own metrics plus kube-state-metrics show
-what the service and the HPA did meanwhile. The **k6 load test** dashboard in
-Grafana puts both next to each other.
+→ Traefik → frontend `/api` proxy → backend replicas) and, per session, on
+the module branch behind it (backend `/modules` → module service → MySQL).
+The run is observed from two sides: k6 pushes its client-side metrics into
+the cluster Prometheus (remote write), and the components' own metrics plus
+kube-state-metrics show what the services and the HPA did meanwhile. The
+**k6 load test** dashboard in Grafana puts both next to each other.
 
 ```
 loadtest/
@@ -14,7 +15,7 @@ loadtest/
   namespace.yaml                ns loadtest, Pod Security `restricted`
   networkpolicy.yaml            default-deny; egress DNS, HTTPS out, Traefik, Prometheus
   job.yaml                      the k6 run (image pinned by digest, env = knobs)
-  scripts/user-mgmt-service.js  the test: signup once, then login + /api/me per iteration
+  scripts/user-mgmt-service.js  the test: signup once, then login + /api/me + /modules per iteration
 ```
 
 Not an ArgoCD Application on purpose: a load test is an experiment you start
@@ -64,8 +65,11 @@ kubectl -n loadtest get job k6-user-mgmt-service          # Complete = threshold
 Profile: 1 min → ¼ peak, 2 min → ½ peak, 2 min → peak, 3 min plateau,
 1 min → 0 (9 minutes). Thresholds (`options.thresholds` in the script) state
 what "available under load" means - p95 login < 2 s, p95 `/api/me` < 1 s,
-< 5 % failed requests, > 95 % checks passed; a breach fails the Job, which is
-the point of the test.
+p95 `/modules` < 2 s, < 5 % failed requests, > 95 % checks passed; a breach
+fails the Job, which is the point of the test. The `/modules` leg is the
+module service's load: one call per session, served by its fixed replicas -
+the **module-service** dashboard (CPU vs. limit, throttling, p95) shows
+whether its vertical sizing holds at the plateau.
 
 Re-run: the Job is immutable once created, so delete it first (it also
 disappears on its own six hours after finishing):
@@ -128,7 +132,7 @@ thresholds, only the k6 panels stay empty.
 | Acceptance criterion | Where |
 |---|---|
 | k6 runs in the cluster, ≥ 1 script for the service | `job.yaml`, `scripts/user-mgmt-service.js` |
-| controlled rising load on a relevant endpoint | ramping-vus stages on `/api/login` (bcrypt, CPU-bound) and `/api/me` |
-| telemetry recorded, effects visible in Prometheus / Grafana | k6 remote write + backend PodMonitor; dashboard **k6 load test** |
+| controlled rising load on a relevant endpoint | ramping-vus stages on `/api/login` (bcrypt, CPU-bound), `/api/me` and `/modules` (the module service behind the backend) |
+| telemetry recorded, effects visible in Prometheus / Grafana | k6 remote write + the components' PodMonitors; dashboards **k6 load test**, **module-service** |
 | HPA adds replicas under load and removes them after | HPA panel / `kubectl get hpa -w` (section 3) |
 | service stays available, requests spread over replicas | k6 thresholds (Job Complete/Failed); request rate per backend pod |

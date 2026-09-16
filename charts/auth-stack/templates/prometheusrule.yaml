@@ -6,14 +6,18 @@
   the Alertmanager route in charts/monitoring/values.yaml matches on, so every
   alert below reaches the configured notification channel.
   Metrics: the images' /metrics on the admin port (templates/podmonitor.yaml):
-  Micrometer `http_server_requests_seconds` and HikariCP on the backend, the
-  Go server's `http_server_requests_seconds` / `http_client_requests_seconds`
-  on the frontend, `health_check_up` and `up` on both.
+  Micrometer `http_server_requests_seconds` and HikariCP on the backend, its
+  `http_client_requests_seconds{peer="modules"}` for the module hop (Aufgabe 6),
+  the Go server's `http_server_requests_seconds` / `http_client_requests_seconds`
+  on the frontend, the module service's `http_server_requests_seconds` and
+  `db_client_statements_seconds`, `health_check_up` and `up` on all of them.
 */}}
 {{- $ns := $.Release.Namespace }}
 {{- $backend := printf "namespace=\"%s\", job=\"backend\"" $ns }}
 {{- $frontend := printf "namespace=\"%s\", job=\"frontend\"" $ns }}
+{{- $modules := printf "namespace=\"%s\", job=\"modules\"" $ns }}
 {{- $hop := printf "namespace=\"%s\", job=\"frontend\", peer=\"backend\"" $ns }}
+{{- $modulesHop := printf "namespace=\"%s\", job=\"backend\", peer=\"modules\"" $ns }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -106,6 +110,42 @@ spec:
               pool timeout. Either the managed database is slow (see the
               database hop on the user-mgmt-service dashboard) or the pool is
               too small for the replica count.
+        - alert: UserMgmtServiceModulesHopFailing
+          expr: >-
+            100 * sum(rate(http_client_requests_seconds_count{ {{ $modulesHop }}, outcome=~"SERVER_ERROR|UNKNOWN" }[5m]))
+            / sum(rate(http_client_requests_seconds_count{ {{ $modulesHop }} }[5m]))
+            > {{ .alerts.errorRatePercent }}
+          for: 10m
+          labels:
+            severity: critical
+            service: user-mgmt-service
+            namespace: {{ $ns }}
+          annotations:
+            summary: user-mgmt-service cannot get answers from the module service ({{ $ns }})
+            description: >-
+              {{ `{{ $value | printf "%.1f" }}` }} % of the backend's calls to
+              the module service in {{ $ns }} end in a 5xx or a transport error
+              (outcome UNKNOWN = not reachable, retries included). Module
+              assignments answer 503 while the circuit breaker is open; check
+              the modules pods, their MySQL health check and the NetworkPolicy
+              path backend -> modules.
+        - alert: UserMgmtServiceSlowModulesHop
+          expr: >-
+            histogram_quantile(0.95, sum by (le) (rate(http_client_requests_seconds_bucket{ {{ $modulesHop }} }[5m])))
+            > {{ .alerts.latencySeconds }}
+          for: 10m
+          labels:
+            severity: warning
+            service: user-mgmt-service
+            namespace: {{ $ns }}
+          annotations:
+            summary: the backend -> module service hop is slow ({{ $ns }})
+            description: >-
+              The 95th percentile of the backend's calls to the module service
+              is {{ `{{ $value | printf "%.2f" }}` }} s in {{ $ns }} (threshold
+              {{ .alerts.latencySeconds }} s; the client read timeout is 3 s,
+              a timed-out call is retried). Compare with the module service's
+              own p95: a gap means retries or time lost between the pods.
     - name: auth-portal
       interval: 30s
       rules:
@@ -174,6 +214,60 @@ spec:
               {{ `{{ $value | printf "%.2f" }}` }} s in {{ $ns }} (threshold
               {{ .alerts.latencySeconds }} s). Compare with the backend's own
               server-side p95: a gap means time is lost between the pods.
+    - name: module-service
+      interval: 30s
+      rules:
+        - alert: ModuleServiceDown
+          expr: >-
+            sum(up{ {{ $modules }} }) == 0
+            or absent(up{ {{ $modules }} })
+          for: 5m
+          labels:
+            severity: critical
+            service: module-service
+            namespace: {{ $ns }}
+          annotations:
+            summary: module-service has no reachable instance ({{ $ns }})
+            description: >-
+              No modules pod in {{ $ns }} answered the metrics scrape for 5
+              minutes: the backend's module endpoints answer 503 once its
+              circuit breaker opens; every other user-mgmt-service route keeps
+              working.
+        - alert: ModuleServiceHighErrorRate
+          expr: >-
+            100 * sum(rate(http_server_requests_seconds_count{ {{ $modules }}, status=~"5.." }[5m]))
+            / sum(rate(http_server_requests_seconds_count{ {{ $modules }} }[5m]))
+            > {{ .alerts.errorRatePercent }}
+          for: 10m
+          labels:
+            severity: critical
+            service: module-service
+            namespace: {{ $ns }}
+          annotations:
+            summary: module-service is answering requests with server errors ({{ $ns }})
+            description: >-
+              {{ `{{ $value | printf "%.1f" }}` }} % of the module service's
+              responses in {{ $ns }} carry a 5xx status (threshold
+              {{ .alerts.errorRatePercent }} %). Look at the database hop on
+              the module-service dashboard: statement errors or an exhausted
+              pool point at the managed MySQL.
+        - alert: ModuleServiceSlowResponses
+          expr: >-
+            histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{ {{ $modules }} }[5m])))
+            > {{ .alerts.latencySeconds }}
+          for: 10m
+          labels:
+            severity: warning
+            service: module-service
+            namespace: {{ $ns }}
+          annotations:
+            summary: module-service is slow ({{ $ns }})
+            description: >-
+              The 95th percentile of the module service's request duration is
+              {{ `{{ $value | printf "%.2f" }}` }} s in {{ $ns }} (threshold
+              {{ .alerts.latencySeconds }} s). One event loop serves every
+              request: a CPU-throttled pod (CPU vs. limit on the dashboard) is
+              the cue to raise the limit - the service scales vertically.
     - name: auth-stack
       interval: 30s
       rules:
@@ -191,6 +285,7 @@ spec:
               A dependency check of the {{ `{{ $labels.job }}` }} pods in {{ $ns }}
               has failed for 5 minutes; /readyz answers 503 on the affected
               pod and it is out of rotation. backend: spring-context, database
-              (the managed PostgreSQL); frontend: static-root, backend-api.
+              (the managed PostgreSQL); frontend: static-root, backend-api;
+              modules: database (the managed MySQL), schema (its seed applied).
 {{- end }}
 {{- end }}

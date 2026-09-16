@@ -45,6 +45,32 @@
         }
       }
     },
+    "mysqlSeed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "image", "files"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "image": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["registry", "repository", "tag", "digest"],
+          "properties": {
+            "registry": { "type": "string", "minLength": 1 },
+            "repository": { "type": "string", "minLength": 1 },
+            "tag": { "type": "string", "minLength": 1 },
+            "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+          }
+        },
+        "resources": { "type": "object" },
+        "files": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "pattern": "^[A-Za-z0-9._-]+\\.sql$" },
+          "additionalProperties": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
     "monitoring": {
       "type": "object",
       "additionalProperties": false,
@@ -106,7 +132,7 @@
         "networkPolicy": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "ingressControllerNamespace", "dnsNamespace", "acmeSolver", "monitoring", "database"],
+          "required": ["enabled", "ingressControllerNamespace", "dnsNamespace", "acmeSolver", "monitoring", "database", "modulesDatabase"],
           "properties": {
             "enabled": { "type": "boolean" },
             "ingressControllerNamespace": { "type": "string", "minLength": 1 },
@@ -129,15 +155,8 @@
                 "namespace": { "type": "string", "minLength": 1 }
               }
             },
-            "database": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["cidr", "port"],
-              "properties": {
-                "cidr": { "type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" },
-                "port": { "$ref": "#/definitions/port" }
-              }
-            }
+            "database": { "$ref": "#/definitions/databaseEndpoint" },
+            "modulesDatabase": { "$ref": "#/definitions/databaseEndpoint" }
           }
         }
       }
@@ -147,6 +166,15 @@
     "quantity": { "type": ["string", "integer"], "pattern": "^[0-9]+(\\.[0-9]+)?(m|k|Ki|M|Mi|G|Gi|T|Ti)?$" },
     "duration": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h)$" },
     "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "databaseEndpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cidr", "port"],
+      "properties": {
+        "cidr": { "type": "string", "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$" },
+        "port": { "$ref": "#/definitions/port" }
+      }
+    },
     "cpuMemory": {
       "type": "object",
       "additionalProperties": false,

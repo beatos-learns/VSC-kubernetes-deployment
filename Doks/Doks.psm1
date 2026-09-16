@@ -1025,14 +1025,23 @@ function Get-DoksDatabaseOutputs {
     if (-not $info.host -or -not $info.port -or -not $creds.admin.user) {
         throw "Terraform outputs 'database' / 'database_credentials' are incomplete - has 'terraform apply' created the database cluster?"
     }
-    [pscustomobject]@{ Info = $info; Credentials = $creds }
+    # the module service's managed MySQL (Aufgabe 6): endpoint, databases, the cluster CA
+    $modInfo  = & $read 'modules_database'
+    $modCreds = & $read 'modules_database_credentials'
+    if (-not $modInfo.host -or -not $modInfo.port -or -not $modInfo.ca -or -not $modCreds.admin.user) {
+        throw "Terraform outputs 'modules_database' / 'modules_database_credentials' are incomplete - has 'terraform apply' created the MySQL cluster?"
+    }
+    [pscustomobject]@{
+        Info = $info; Credentials = $creds
+        Modules = [pscustomobject]@{ Info = $modInfo; Credentials = $modCreds }
+    }
 }
 
 function Sync-DoksTerraform {
     <#
     .SYNOPSIS
         Makes terraform/ describe a cluster and applies it: adopts the cluster,
-        creates (or keeps) the managed database.
+        creates (or keeps) the managed databases (PostgreSQL, MySQL).
 
     .DESCRIPTION
         The step between New-DoksCluster and Bootstrap-DoksCluster, as a command:
@@ -1125,11 +1134,11 @@ function Sync-DoksTerraform {
                     if ($LASTEXITCODE -ne 0) { throw "terraform state rm failed (exit code $LASTEXITCODE)." }
                 }
             }
-            if ($PSCmdlet.ShouldProcess($TerraformDir, 'terraform apply -auto-approve (adopt the cluster, create or keep the managed database)')) {
-                Write-Host '> terraform apply -auto-approve  (a new managed database takes about 5 minutes)' -ForegroundColor DarkGray
+            if ($PSCmdlet.ShouldProcess($TerraformDir, 'terraform apply -auto-approve (adopt the cluster, create or keep the managed databases)')) {
+                Write-Host '> terraform apply -auto-approve  (new managed databases take about 5 minutes)' -ForegroundColor DarkGray
                 & $exe "-chdir=$TerraformDir" apply -input=false -auto-approve | Out-Host
                 if ($LASTEXITCODE -ne 0) { throw "terraform apply failed (exit code $LASTEXITCODE)." }
-                Write-Host "Terraform applied: cluster adopted, managed database ready." -ForegroundColor Green
+                Write-Host "Terraform applied: cluster adopted, managed databases ready." -ForegroundColor Green
             }
         }
         finally {
@@ -1151,11 +1160,12 @@ function Initialize-DoksCluster {
 
         Steps (in order):
           1. Connect   - point this window at the cluster (-ClusterName), verify access;
-                         read the managed database from the Terraform outputs
+                         read the managed databases from the Terraform outputs
                          (Sync-DoksTerraform must have applied for this cluster).
           2. Secrets   - per environment namespace: create the namespace, an
-                         'auth-stack-secrets' Secret (the managed database's endpoint and
-                         credentials from the Terraform outputs + a random jwt-secret),
+                         'auth-stack-secrets' Secret (endpoints and credentials of the
+                         managed PostgreSQL and MySQL from the Terraform outputs, the
+                         MySQL cluster CA, + a random jwt-secret),
                          and optionally a GHCR image pull Secret (-GhcrUsername/-GhcrToken).
                          Then the monitoring namespace with Grafana's admin Secret
                          (random password) and the Alertmanager notification channel
@@ -1197,9 +1207,10 @@ function Initialize-DoksCluster {
         How long step 5 waits for the load balancer IP. Default: 900.
 
     .PARAMETER TerraformDir
-        Folder of the Terraform configuration whose outputs 'database' and
-        'database_credentials' provide the managed database's endpoint and
-        credentials (terraform/database.tf). Default: <RepoRoot>/terraform.
+        Folder of the Terraform configuration whose outputs 'database',
+        'database_credentials', 'modules_database' and 'modules_database_credentials'
+        provide the managed databases' endpoints and credentials
+        (terraform/database.tf). Default: <RepoRoot>/terraform.
 
     .PARAMETER GhcrUsername
         GitHub username for the GHCR image pull Secret. Omit if the GHCR packages
@@ -1340,6 +1351,16 @@ function Initialize-DoksCluster {
             if (-not $dbName -or -not $role) {
                 throw "Terraform output 'database' has no environment '$envKey' for namespace $ns (var.environments in terraform/variables.tf lists: $(@($database.Info.databases.PSObject.Properties.Name) -join ', '))."
             }
+            $modules = $database.Modules
+            $modName = $modules.Info.databases.$envKey
+            $modRole = $modules.Credentials.environments.$envKey
+            if (-not $modName -or -not $modRole) {
+                throw "Terraform output 'modules_database' has no environment '$envKey' for namespace $ns."
+            }
+            # the module service reads one URL (the password inside it URL-encoded)
+            # and verifies the server against the cluster CA (PEM, indented into the block scalar)
+            $modPassword = [System.Uri]::EscapeDataString($modRole.password)
+            $caBlock = (($modules.Info.ca.Trim() -split "`r?`n") | ForEach-Object { '    ' + $_ }) -join "`n"
             $manifest = @"
 apiVersion: v1
 kind: Secret
@@ -1357,9 +1378,17 @@ stringData:
   db-admin-user: "$($database.Credentials.admin.user)"
   db-admin-password: "$($database.Credentials.admin.password)"
   jwt-secret: "$(New-DoksRandomSecret -Bytes 48)"
+  mysql-host: "$($modules.Info.host)"
+  mysql-port: "$($modules.Info.port)"
+  mysql-name: "$modName"
+  mysql-admin-user: "$($modules.Credentials.admin.user)"
+  mysql-admin-password: "$($modules.Credentials.admin.password)"
+  mysql-ca: |
+$caBlock
+  database-url: "mysql+pymysql://$($modRole.user):$modPassword@$($modules.Info.host):$($modules.Info.port)/$modName?charset=utf8mb4"
 "@
             Invoke-KubectlManifest -Manifest $manifest -Arguments @('create', '-f', '-')
-            Write-Host "  Secret $SecretName created (managed database $dbName as $($role.user), random jwt-secret)." -ForegroundColor Green
+            Write-Host "  Secret $SecretName created (managed PostgreSQL $dbName as $($role.user), managed MySQL $modName as $($modRole.user), random jwt-secret)." -ForegroundColor Green
         }
 
         if ($GhcrUsername -and $GhcrToken) {

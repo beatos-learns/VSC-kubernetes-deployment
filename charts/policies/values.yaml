@@ -8,6 +8,10 @@ applicationNamespaces:
 images:
   # the CI repo's registry path: the only source of application images
   registry: ghcr.io/beatos-learns/vsc-kubernetes-containers
+  # the one image from elsewhere: Docker's official MySQL image as the client
+  # of the module service's schema seed Job (charts/auth-stack mysqlSeed),
+  # admitted by digest only - validate.yml checks the reference the same way
+  mysqlClient: docker.io/library/mysql
   # keyless cosign identity of the CI repo's build workflow - the same regex
   # validate.yml gates promotions with (CI fails when the two differ)
   signer:
