@@ -126,7 +126,7 @@
       "fieldConfig": { "defaults": { "unit": "percent", "decimals": 2, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "orange", "value": 2 }, { "color": "red", "value": 10 }] } }, "overrides": [] },
       "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "textMode": "auto" },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "100 * sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\", status=~\"5..\"}[2m])) / sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\"}[2m]))", "legendFormat": "5xx", "range": true, "refId": "A" }
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "100 * sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\", job=\"backend\", status=~\"5..\"}[2m])) / sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\", job=\"backend\"}[2m]))", "legendFormat": "5xx", "range": true, "refId": "A" }
       ]
     },
     {
@@ -205,7 +205,7 @@
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
         { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "max by (name) (k6_http_req_duration_p95{testid=~\"$testid\"})", "legendFormat": "k6 p95 {{name}}", "range": true, "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=\"$namespace\"}[2m])))", "legendFormat": "server p95", "range": true, "refId": "B" }
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=\"$namespace\", job=\"backend\"}[2m])))", "legendFormat": "server p95", "range": true, "refId": "B" }
       ]
     },
     {
@@ -218,7 +218,7 @@
       "fieldConfig": { "defaults": { "unit": "reqps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 25, "lineWidth": 1, "showPoints": "never", "stacking": { "mode": "normal" } } }, "overrides": [] },
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (pod) (rate(http_server_requests_seconds_count{namespace=\"$namespace\"}[1m]))", "legendFormat": "{{pod}}", "range": true, "refId": "A" }
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "sum by (pod) (rate(http_server_requests_seconds_count{namespace=\"$namespace\", job=\"backend\"}[1m]))", "legendFormat": "{{pod}}", "range": true, "refId": "A" }
       ]
     },
     {
@@ -232,7 +232,7 @@
       "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
       "targets": [
         { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "100 * max(k6_http_req_failed_rate{testid=~\"$testid\"})", "legendFormat": "k6 failed", "range": true, "refId": "A" },
-        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "100 * sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\", status=~\"5..\"}[2m])) / sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\"}[2m]))", "legendFormat": "server 5xx", "range": true, "refId": "B" }
+        { "datasource": { "type": "prometheus", "uid": "${datasource}" }, "editorMode": "code", "expr": "100 * sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\", job=\"backend\", status=~\"5..\"}[2m])) / sum(rate(http_server_requests_seconds_count{namespace=\"$namespace\", job=\"backend\"}[2m]))", "legendFormat": "server 5xx", "range": true, "refId": "B" }
       ]
     }
   ]

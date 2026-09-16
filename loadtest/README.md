@@ -129,6 +129,6 @@ thresholds, only the k6 panels stay empty.
 |---|---|
 | k6 runs in the cluster, ≥ 1 script for the service | `job.yaml`, `scripts/user-mgmt-service.js` |
 | controlled rising load on a relevant endpoint | ramping-vus stages on `/api/login` (bcrypt, CPU-bound) and `/api/me` |
-| telemetry recorded, effects visible in Prometheus / Grafana | k6 remote write + backend ServiceMonitor; dashboard **k6 load test** |
+| telemetry recorded, effects visible in Prometheus / Grafana | k6 remote write + backend PodMonitor; dashboard **k6 load test** |
 | HPA adds replicas under load and removes them after | HPA panel / `kubectl get hpa -w` (section 3) |
 | service stays available, requests spread over replicas | k6 thresholds (Job Complete/Failed); request rate per backend pod |

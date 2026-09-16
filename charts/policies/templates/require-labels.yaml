@@ -1,6 +1,6 @@
 {{/*
   Workloads of the application namespaces carry the labels every selector,
-  NetworkPolicy, ServiceMonitor and dashboard of this repository keys on.
+  NetworkPolicy, PodMonitor and dashboard of this repository keys on.
 */}}
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy

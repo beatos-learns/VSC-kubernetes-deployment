@@ -417,7 +417,7 @@
       "id": 10,
       "type": "timeseries",
       "title": "Latency by service (p95, p50)",
-      "description": "Edge-side request duration; the difference to the backend's own p95 (user-mgmt-service dashboard) is the frontend proxy and the network in between.",
+      "description": "Edge-side request duration, the outermost measurement of a request; the request flow dashboard (auth-stack folder) puts it next to the frontend, the frontend -> backend hop and the backend, so the gap between two hops is the time spent in the component between them.",
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
       "fieldConfig": {

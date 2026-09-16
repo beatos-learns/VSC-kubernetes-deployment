@@ -42,9 +42,18 @@ the end map both).
 Nothing in either repo runs `kubectl apply` or `helm upgrade` against the
 cluster. GitHub workflows build, validate, and **commit**; ArgoCD pulls.
 The only imperative steps are the one-time ones per cluster
-(`bootstrap/README.md`): `New-DoksCluster` creates the cluster,
-`terraform apply` adopts it and creates the managed database,
-`Bootstrap-DoksCluster` hands it to ArgoCD (`Doks/README.md`).
+(`bootstrap/README.md`), and the Doks module makes them one line:
+
+```powershell
+New-DoksCluster | Sync-DoksTerraform | Bootstrap-DoksCluster; Connect-DoksPortForward
+```
+
+`New-DoksCluster` creates the cluster, `Sync-DoksTerraform` adopts it into
+`terraform/` and creates the managed database, `Bootstrap-DoksCluster` hands
+it to ArgoCD and writes the load balancer IP into the nip.io hosts, and
+`Connect-DoksPortForward` opens every UI on localhost with its credentials
+(`Doks/README.md`). The cluster facts the line writes (`terraform.tfvars`, the
+hosts in the overlays and the load test) go back through a pull request.
 
 ## Layout
 
@@ -95,8 +104,8 @@ charts/monitoring/          wrapper chart:
                             routing and receiver, Grafana provisioning, the
                             platform alert rules
   files/dashboards/         dashboards as code, one directory per Grafana folder:
-                            auth-stack/ (user-mgmt-service, Kubernetes resources,
-                            k6 load test), platform/ (cluster capacity, edge:
+                            auth-stack/ (user-mgmt-service, auth-portal, request
+                            flow, Kubernetes resources, k6 load test), platform/ (cluster capacity, edge:
                             Traefik + cert-manager, ArgoCD)
   templates/dashboards.yaml renders them into sidecar-labelled ConfigMaps
 charts/policies/            the cluster's ClusterPolicies (Aufgabe 5, Kyverno):
@@ -112,8 +121,8 @@ charts/auth-stack/          wrapper chart:
   Chart.yaml                pins generic-stack (OCI dependency from GHCR)
   values.yaml               DO-common: the disabled db component, datasource
                             wiring from the Secret, resources, seed SQL,
-                            ingress + TLS + security headers, PodMonitor
-                            (frontend), namespace policy defaults
+                            ingress + TLS + security headers, chart-wide
+                            monitoring (access logs), namespace policy defaults
   values-staging.yaml       env overlay — CI promotion target (image tags),
                             small HPA/PDB, hosts, quota
   values-prod.yaml          env overlay — promoted via PR; HPA 2–5, PDBs,
@@ -123,8 +132,9 @@ charts/auth-stack/          wrapper chart:
                             NetworkPolicies (default-deny in/out + explicit
                             flows), Traefik security-headers Middleware,
                             schema seed Job (ArgoCD PreSync hook, psql against
-                            the managed database), ServiceMonitor +
-                            PrometheusRule for the backend
+                            the managed database), one PodMonitor per
+                            component + PrometheusRule (backend, frontend,
+                            the hop between them, health checks)
 Doks/                       PowerShell module: create/connect/delete the
                             throwaway DOKS cluster and run the bootstrap once
                             Terraform has created the database; see
@@ -170,9 +180,10 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos T
 * **Wrapper chart, not a fork.** `auth-stack` declares `generic-stack` as an
   OCI dependency (`helm dependency build` vendors it via `Chart.lock`). The
   CI repo owns application policy (probes, security posture, wiring, scaling
-  mechanics); this repo owns environment policy (sizes, hosts, quotas,
-  isolation, thresholds). Image tags are overridden per environment — that
-  override is the promotion interface.
+  mechanics, the admin and log interface of every container through the
+  chart-wide `monitoring` block); this repo owns environment policy (sizes,
+  hosts, quotas, isolation, scraping, thresholds, access logs). Image tags
+  are overridden per environment — that override is the promotion interface.
 * **One ingress controller instead of per-env proxies.** The chart's in-stack
   Traefik `proxy` component is disabled; a cluster-wide Traefik
   (`argocd/infra-traefik.yaml`, 2 replicas, PDB, spread across nodes, TLS ≥ 1.2,
@@ -266,8 +277,10 @@ loadtest/                   k6 load test as a Kubernetes Job (Aufgabe 2, Chaos T
   controller-manager, etcd and kube-proxy are switched off instead of failing
   forever, and the API-server SLO rule sets — the chart's most expensive —
   go with them. Every scrape target is declared by its owner: the environments
-  carry their `ServiceMonitor` and `PrometheusRule` (thresholds per overlay)
-  plus the `generic-stack` PodMonitor for the frontend; Traefik, cert-manager,
+  carry one `PodMonitor` per component (every image serves `/metrics` on its
+  admin port, `job` is the component name, the pods' version label travels
+  with the series) and their `PrometheusRule` (thresholds per overlay);
+  Traefik, cert-manager,
   Kyverno and ArgoCD enable their own charts' ServiceMonitors — no selector or
   port is copied into the monitoring chart, and `validate.yml` renders those
   charts to prove each monitor selects a Service. Prometheus discovers them only in the
@@ -452,13 +465,13 @@ in the working tree on any platform (it overrides `core.autocrlf`).
 | 4 Pipeline | CI repo `build.yml`: build/scan/sign/publish on push, immutable version tag + unique `tree-<git tree hash>` tag per source state, registry login via `GITHUB_TOKEN`, no imperative deploy, no cluster credentials; `validate.yml` here is deploy-free; the CI `promote` job commits tag bumps here as PRs (staging auto-merged on green checks, prod human-merged) |
 | 5 Namespaces | `values-*.yaml` overlays, `templates/resourcequota.yaml`, `limitrange.yaml`, `networkpolicy.yaml`, PSA labels in `argocd/app-*.yaml` |
 | 6 Scaling | HPA/PDB/RollingUpdate/anti-affinity via `generic-stack`, thresholds in the overlays; liveness/readiness/startup probes on every component; Traefik round-robins the Ingress over ready endpoints only; TLS via cert-manager; metrics-server infra app |
-| 7 Monitoring | kube-prometheus-stack in ns `monitoring` via `argocd/infra-monitoring.yaml` + `charts/monitoring` (its `values.yaml` is the whole configuration); per-pod CPU/memory from the kubelet + kube-state-metrics; `charts/auth-stack/templates/servicemonitor.yaml` scrapes the backend's admin port (request rate, response time, error rate); `prometheusrule.yaml` defines the alerts and the Alertmanager route in `charts/monitoring/values.yaml` forwards them to the webhook receiver; dashboards in `charts/monitoring/files/dashboards/` (`auth-stack/`: user-mgmt-service, Kubernetes resources, k6; `platform/`: cluster capacity, edge, ArgoCD); the platform apps are scraped through their charts' ServiceMonitors and covered by the `monitoring-kube-prometheus-platform` rules; verification steps in `bootstrap/README.md` step 10 |
+| 7 Monitoring | kube-prometheus-stack in ns `monitoring` via `argocd/infra-monitoring.yaml` + `charts/monitoring` (its `values.yaml` is the whole configuration); per-pod CPU/memory from the kubelet + kube-state-metrics; `charts/auth-stack/templates/podmonitor.yaml` scrapes every component's admin port (backend: routes, database hop, JVM; frontend: routes, the frontend -> backend hop, Go runtime; both: the images' health checks); `prometheusrule.yaml` defines the alerts (backend errors/latency/logins/pool, frontend errors/hop, failing health checks) and the Alertmanager route in `charts/monitoring/values.yaml` forwards them to the webhook receiver; dashboards in `charts/monitoring/files/dashboards/` (`auth-stack/`: user-mgmt-service, auth-portal, request flow, Kubernetes resources, k6; `platform/`: cluster capacity, edge, ArgoCD); the platform apps are scraped through their charts' ServiceMonitors and covered by the `monitoring-kube-prometheus-platform` rules; verification steps in `bootstrap/README.md` step 10 |
 
 ## Task mapping (Tooling block, VSC_Observability)
 
 | Aufgabe | Where |
 |---|---|
-| 1 Observability | see "7 Monitoring" above: kube-prometheus-stack in ns `monitoring`, per-pod CPU/memory, backend ServiceMonitor (request rate, response time, error rate), the dashboards under `charts/monitoring/files/dashboards/`, PrometheusRule + Alertmanager webhook, all configured in `charts/monitoring/values.yaml` |
+| 1 Observability | see "7 Monitoring" above: kube-prometheus-stack in ns `monitoring`, per-pod CPU/memory, one PodMonitor per component (routes, the hops between the components, runtime, health checks), the dashboards under `charts/monitoring/files/dashboards/`, PrometheusRule + Alertmanager webhook, all configured in `charts/monitoring/values.yaml` |
 | 2 Chaos Testing | `loadtest/`: k6 as a Kubernetes Job with `scripts/user-mgmt-service.js` (ramping load on `/api/login` + `/api/me`); k6 metrics via remote write into Prometheus, dashboard `k6 load test` (VUs/RPS/p95 next to server-side rate/latency, HPA desired vs. current, CPU vs. target, requests per backend pod); HPA scale-up/down and availability procedure in `loadtest/README.md` |
 | 3 Terraform IaC | `terraform/`: DigitalOcean provider, `imports.tf` import block, `generated.tf` from `terraform plan -generate-config-out` (cleaned; its header states what is omitted and why), `variables.tf`, token via `DIGITALOCEAN_TOKEN` only, `terraform fmt`/`validate` in `validate.yml`, `plan` empty for the running cluster (`terraform/README.md`) |
 | 4 Managed Ressources | `terraform/database.tf`: DigitalOcean Managed PostgreSQL (cluster in the DOKS VPC, database + login role per environment, firewall for the Kubernetes cluster) provisioned with the DigitalOcean provider, outputs `database` / `database_credentials`; `charts/auth-stack`: db component disabled (no pod, Service or PVC; quota allows none), the backend reads `db-url`/`db-user`/`db-password` from the `auth-stack-secrets` Secret only, schema via the PreSync seed Job (`templates/db-seed-job.yaml`); procedure in `terraform/README.md` and `bootstrap/README.md` step 2 |

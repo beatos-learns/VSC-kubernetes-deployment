@@ -125,9 +125,11 @@ account from CI. The drift check (`plan`) is a local, authenticated step.
 
 `New-DoksCluster` creates throwaway clusters imperatively (its defaults in
 `Doks/Doks.defaults.psd1` are the variable defaults here); the database only
-exists through Terraform. Order for a new cluster: `New-DoksCluster`, put its
-id and version into `terraform.tfvars`, `terraform apply` (adopts the cluster,
-creates the database), then `Bootstrap-DoksCluster` (reads the database
-outputs into the Secrets). `Remove-DoksCluster` bypasses
-Terraform - run `terraform state rm digitalocean_kubernetes_cluster.this`
-afterwards, or delete through Terraform in the first place.
+exists through Terraform. Order for a new cluster: `New-DoksCluster`,
+`Sync-DoksTerraform` (writes the cluster's id, name and version into
+`terraform.tfvars`, drops a previous cluster from the state, runs `init` and
+`apply` with the module's token: adopts the cluster, creates the database),
+then `Bootstrap-DoksCluster` (reads the database outputs into the Secrets) -
+or the same steps by hand as described above. `Remove-DoksCluster` bypasses
+Terraform; the next `Sync-DoksTerraform` removes the deleted cluster from the
+state before adopting the new one.

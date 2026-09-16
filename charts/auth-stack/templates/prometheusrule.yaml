@@ -1,15 +1,19 @@
 {{- with .Values.monitoring }}
 {{- if and .enabled .alerts.enabled }}
 {{/*
-  What counts as broken for this service (Aufgabe 7). The thresholds are
+  What counts as broken for this environment (Aufgabe 7). The thresholds are
   environment policy and come from the overlays; the `service` label is what
   the Alertmanager route in charts/monitoring/values.yaml matches on, so every
   alert below reaches the configured notification channel.
-  Metrics: Micrometer/Actuator `http_server_requests_seconds` on the admin port.
+  Metrics: the images' /metrics on the admin port (templates/podmonitor.yaml):
+  Micrometer `http_server_requests_seconds` and HikariCP on the backend, the
+  Go server's `http_server_requests_seconds` / `http_client_requests_seconds`
+  on the frontend, `health_check_up` and `up` on both.
 */}}
 {{- $ns := $.Release.Namespace }}
-{{- $job := include "auth-stack.componentName" (dict "root" $ "name" "backend") }}
-{{- $sel := printf "namespace=\"%s\", job=\"%s\"" $ns $job }}
+{{- $backend := printf "namespace=\"%s\", job=\"backend\"" $ns }}
+{{- $frontend := printf "namespace=\"%s\", job=\"frontend\"" $ns }}
+{{- $hop := printf "namespace=\"%s\", job=\"frontend\", peer=\"backend\"" $ns }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -23,8 +27,8 @@ spec:
       rules:
         - alert: UserMgmtServiceHighErrorRate
           expr: >-
-            100 * sum(rate(http_server_requests_seconds_count{ {{ $sel }}, status=~"5.." }[5m]))
-            / sum(rate(http_server_requests_seconds_count{ {{ $sel }} }[5m]))
+            100 * sum(rate(http_server_requests_seconds_count{ {{ $backend }}, status=~"5.." }[5m]))
+            / sum(rate(http_server_requests_seconds_count{ {{ $backend }} }[5m]))
             > {{ .alerts.errorRatePercent }}
           for: 10m
           labels:
@@ -40,7 +44,7 @@ spec:
               users; check the backend logs and the database connection.
         - alert: UserMgmtServiceSlowResponses
           expr: >-
-            histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{ {{ $sel }} }[5m])))
+            histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{ {{ $backend }} }[5m])))
             > {{ .alerts.latencySeconds }}
           for: 10m
           labels:
@@ -53,10 +57,11 @@ spec:
               The 95th percentile of the request duration is
               {{ `{{ $value | printf "%.2f" }}` }} s in {{ $ns }} (threshold
               {{ .alerts.latencySeconds }} s). If CPU sits at the HPA target the
-              autoscaler is already at work - check its bounds in the overlay.
+              autoscaler is already at work - check its bounds in the overlay;
+              if the database hop is slow on the dashboard, look at the pool.
         - alert: UserMgmtServiceLoginFailures
           expr: >-
-            sum(rate(http_server_requests_seconds_count{ {{ $sel }}, uri="{{ .alerts.loginUri }}", status=~"4.." }[5m]))
+            sum(rate(http_server_requests_seconds_count{ {{ $backend }}, uri="{{ .alerts.loginUri }}", status=~"4.." }[5m]))
             > {{ .alerts.loginFailuresPerSecond }}
           for: 10m
           labels:
@@ -73,8 +78,8 @@ spec:
               accepting valid credentials.
         - alert: UserMgmtServiceDown
           expr: >-
-            sum(up{ {{ $sel }} }) == 0
-            or absent(up{ {{ $sel }} })
+            sum(up{ {{ $backend }} }) == 0
+            or absent(up{ {{ $backend }} })
           for: 5m
           labels:
             severity: critical
@@ -85,5 +90,107 @@ spec:
             description: >-
               No backend pod in {{ $ns }} answered the metrics scrape for 5
               minutes: the API is down, or the deployment was scaled to zero.
+        - alert: UserMgmtServiceDbPoolSaturated
+          expr: >-
+            max(hikaricp_connections_pending{ {{ $backend }} }) > 0
+            or sum(increase(hikaricp_connections_timeout_total{ {{ $backend }} }[10m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+            service: user-mgmt-service
+            namespace: {{ $ns }}
+          annotations:
+            summary: user-mgmt-service is waiting for database connections ({{ $ns }})
+            description: >-
+              Requests in {{ $ns }} queue for a HikariCP connection or hit the
+              pool timeout. Either the managed database is slow (see the
+              database hop on the user-mgmt-service dashboard) or the pool is
+              too small for the replica count.
+    - name: auth-portal
+      interval: 30s
+      rules:
+        - alert: AuthPortalDown
+          expr: >-
+            sum(up{ {{ $frontend }} }) == 0
+            or absent(up{ {{ $frontend }} })
+          for: 5m
+          labels:
+            severity: critical
+            service: auth-portal
+            namespace: {{ $ns }}
+          annotations:
+            summary: auth-portal has no reachable instance ({{ $ns }})
+            description: >-
+              No frontend pod in {{ $ns }} answered the metrics scrape for 5
+              minutes: the UI is down for every user of this environment.
+        - alert: AuthPortalHighErrorRate
+          expr: >-
+            100 * sum(rate(http_server_requests_seconds_count{ {{ $frontend }}, status=~"5.." }[5m]))
+            / sum(rate(http_server_requests_seconds_count{ {{ $frontend }} }[5m]))
+            > {{ .alerts.errorRatePercent }}
+          for: 10m
+          labels:
+            severity: critical
+            service: auth-portal
+            namespace: {{ $ns }}
+          annotations:
+            summary: auth-portal is answering requests with server errors ({{ $ns }})
+            description: >-
+              {{ `{{ $value | printf "%.1f" }}` }} % of the frontend's responses
+              in {{ $ns }} carry a 5xx status (threshold
+              {{ .alerts.errorRatePercent }} %). If the backend hop below is
+              clean, the frontend itself is failing; otherwise it only relays
+              what the backend returns.
+        - alert: AuthPortalBackendHopFailing
+          expr: >-
+            100 * sum(rate(http_client_requests_seconds_count{ {{ $hop }}, outcome=~"SERVER_ERROR|UNKNOWN" }[5m]))
+            / sum(rate(http_client_requests_seconds_count{ {{ $hop }} }[5m]))
+            > {{ .alerts.errorRatePercent }}
+          for: 10m
+          labels:
+            severity: critical
+            service: auth-portal
+            namespace: {{ $ns }}
+          annotations:
+            summary: auth-portal cannot get answers from the backend ({{ $ns }})
+            description: >-
+              {{ `{{ $value | printf "%.1f" }}` }} % of the calls the frontend
+              proxies to the backend in {{ $ns }} end in a 5xx or a transport
+              error (outcome UNKNOWN = the backend was not reachable). Check the
+              backend pods and the NetworkPolicy path frontend -> backend.
+        - alert: AuthPortalSlowBackendHop
+          expr: >-
+            histogram_quantile(0.95, sum by (le) (rate(http_client_requests_seconds_bucket{ {{ $hop }} }[5m])))
+            > {{ .alerts.latencySeconds }}
+          for: 10m
+          labels:
+            severity: warning
+            service: auth-portal
+            namespace: {{ $ns }}
+          annotations:
+            summary: the frontend -> backend hop is slow ({{ $ns }})
+            description: >-
+              The 95th percentile of the frontend's proxied backend calls is
+              {{ `{{ $value | printf "%.2f" }}` }} s in {{ $ns }} (threshold
+              {{ .alerts.latencySeconds }} s). Compare with the backend's own
+              server-side p95: a gap means time is lost between the pods.
+    - name: auth-stack
+      interval: 30s
+      rules:
+        - alert: AuthStackHealthCheckFailing
+          expr: >-
+            min by (job, check) (health_check_up{namespace="{{ $ns }}"}) == 0
+          for: 5m
+          labels:
+            severity: warning
+            service: auth-stack
+            namespace: {{ $ns }}
+          annotations:
+            summary: "{{ `{{ $labels.job }}` }} health check '{{ `{{ $labels.check }}` }}' is failing ({{ $ns }})"
+            description: >-
+              A dependency check of the {{ `{{ $labels.job }}` }} pods in {{ $ns }}
+              has failed for 5 minutes; /readyz answers 503 on the affected
+              pod and it is out of rotation. backend: spring-context, database
+              (the managed PostgreSQL); frontend: static-root, backend-api.
 {{- end }}
 {{- end }}

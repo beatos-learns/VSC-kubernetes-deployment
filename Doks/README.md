@@ -26,12 +26,16 @@ elsewhere. `$env:DIGITALOCEAN_ACCESS_TOKEN` overrides both for a session.
 ## Daily use
 
 ```powershell
+New-DoksCluster | Sync-DoksTerraform | Bootstrap-DoksCluster; Connect-DoksPortForward
+                                   # the whole startup: create + connect, terraform apply (adopt
+                                   # the cluster, managed database), GitOps handover, every UI
+                                   # on localhost with its credentials
 New-DoksCluster                    # create (fra1, 2x s-2vcpu-4gb, autoscale 2-10), wait, connect
-kubectl get nodes                  # this window now talks to the new cluster
-                                   # then: id + version into terraform/terraform.tfvars, terraform apply
+Sync-DoksTerraform                 # terraform.tfvars = this cluster, state, init + apply (verbose)
+Bootstrap-DoksCluster              # GitOps handover: namespaces+secrets, ArgoCD, root app
+Connect-DoksPortForward            # ArgoCD, Grafana, Prometheus, Alertmanager on localhost
 Get-DoksCluster                    # what is running (= what is billing) right now
 Use-DoksCluster k8s-test-fra1      # point this window at an existing cluster
-Bootstrap-DoksCluster              # GitOps handover: namespaces+secrets, ArgoCD, root app
 Disconnect-DoksCluster             # forget the cluster in this window
 Remove-DoksCluster k8s-test-fra1   # delete cluster + load balancers/volumes + local kubeconfig
 ```
@@ -47,22 +51,27 @@ manual procedure in `bootstrap/README.md`: environment namespaces +
 secrets (the managed database's endpoint and credentials from
 `terraform output`, a random `jwt-secret`, optional GHCR pull secret), the
 `monitoring` namespace with Grafana's admin password and the Alertmanager
-notification channel, ArgoCD (pinned chart version) from
+notification channel (a webhook.site inbox created on the spot unless
+`-AlertWebhookUrl` names your own), ArgoCD (pinned chart version) from
 `bootstrap/argocd-values.yaml`, then the root application `argocd/root.yaml` -
-after which ArgoCD pulls everything from git.
+after which ArgoCD pulls everything from git - and finally the load balancer IP
+into the nip.io hosts of the overlays and the load test (commit that, together
+with `terraform.tfvars`).
 
 ```powershell
-New-DoksCluster                                    # then: cluster id into terraform.tfvars, terraform apply
-Bootstrap-DoksCluster k8s-test-fra1                # secrets from the Terraform outputs, ArgoCD, root app
+New-DoksCluster | Sync-DoksTerraform            # cluster, then terraform.tfvars + init + apply (adopt it, managed database)
+Bootstrap-DoksCluster k8s-test-fra1                # secrets from the Terraform outputs, ArgoCD, root app;
+                                                   # alert channel = a webhook.site inbox opened in the browser
 Bootstrap-DoksCluster k8s-test-fra1 `
     -GhcrUsername beatos-learns `                  # prompts for the read:packages PAT
-    -AlertWebhookUrl https://webhook.site/<id>     # where Alertmanager notifies
+    -AlertWebhookUrl https://hooks.example.org/x   # your own channel instead of the webhook.site inbox
 Get-Help Bootstrap-DoksCluster -Full               # all parameters, examples, caveats
 ```
 
 Safe to re-run: existing Secrets are never overwritten, ArgoCD upgrades in
-place, the root application applies declaratively. `terraform apply` must
-have run first: the database outputs are read from `terraform/` (-TerraformDir).
+place, the root application applies declaratively. `Sync-DoksTerraform` (or a
+manual `terraform apply`) must have run first: the database outputs are read
+from `terraform/` (-TerraformDir).
 
 ## Commands
 
@@ -76,10 +85,13 @@ have run first: the database outputs are read from `terraform/` (-TerraformDir).
 | `Wait-DoksNodeReady` | block until N nodes report Ready |
 | `Get-DoksOption` | list valid `Regions` / `Sizes` / `Versions` |
 | `Bootstrap-DoksCluster` | one-time GitOps bootstrap per `bootstrap/README.md` (alias of `Initialize-DoksCluster`) |
+| `Sync-DoksTerraform` | write the cluster into `terraform/terraform.tfvars`, drop a previous cluster from the state, `terraform init` + `apply` (adopt the cluster, managed database); passes the cluster through the pipeline |
+| `Sync-DoksHostname` | wait for the Traefik load balancer IP and write it into the nip.io hosts of both overlays and `loadtest/job.yaml` (the bootstrap's last step; standalone to repeat it) |
 | `Set-DoksToken` / `Remove-DoksToken` | store / delete the API token per user |
 | `Connect-DoksAccount` / `Disconnect-DoksAccount` / `Get-DoksAccount` | session auth against the DO API |
 | `Get-DoksDefault` / `Set-DoksDefault` | inspect / change the effective settings |
 | `Test-DoksSetup` | diagnose tools, token, API access, kubeconfig folder |
+| `Connect-DoksPortForward` / `Disconnect-DoksPortForward` | forward ArgoCD (8080), Grafana (3000), Prometheus (9090) and Alertmanager (9093) to localhost in one command; Ctrl+C or the second command ends them all (`-Background` keeps them) |
 
 All destructive commands support `-WhatIf` / `-Confirm`;
 `Remove-DoksCluster` prompts unless `-Force` is given.

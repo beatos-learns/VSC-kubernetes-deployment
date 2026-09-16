@@ -23,7 +23,11 @@
         'Get-DoksAccount',
         'Get-DoksDefault',
         'Set-DoksDefault',
-        'Test-DoksSetup'
+        'Test-DoksSetup',
+        'Sync-DoksTerraform',
+        'Sync-DoksHostname',
+        'Connect-DoksPortForward',
+        'Disconnect-DoksPortForward'
     )
     CmdletsToExport      = @()
     VariablesToExport    = @()

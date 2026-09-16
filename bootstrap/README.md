@@ -21,7 +21,8 @@ kubectl get nodes
 `New-DoksCluster` from the `Doks` module does the same for a fresh cluster.
 Either way Terraform adopts the cluster next and creates the managed database:
 its id and version go into `terraform/terraform.tfvars`, then
-`terraform apply` (`terraform/README.md`).
+`terraform apply` (`terraform/README.md`) - or `Sync-DoksTerraform` from the
+`Doks` module, which does exactly that in one command.
 
 ## 2. Namespaces and secrets (out-of-band, never in git)
 
@@ -97,9 +98,12 @@ EOF
 
 Any endpoint that accepts Alertmanager's JSON payload is a valid channel: a
 chat bridge, an automation platform, or a `https://webhook.site/<id>` inbox
-for a demonstration. Alertmanager reads the file per notification, so
-replacing the Secret is enough — the kubelet refreshes the mount within about
-a minute (`kubectl -n monitoring rollout restart statefulset/alertmanager-monitoring-kube-prometheus`
+for a demonstration (`Bootstrap-DoksCluster` creates such an inbox through the
+webhook.site API when no `-AlertWebhookUrl` is given, opens it in the browser
+and prints both URLs in its handover; the inbox is public to anyone with the
+link and expires seven days after its last request). Alertmanager reads the
+file per notification, so replacing the Secret is enough — the kubelet
+refreshes the mount within about a minute (`kubectl -n monitoring rollout restart statefulset/alertmanager-monitoring-kube-prometheus`
 forces it). Without the Secret the Alertmanager pod does not start: the
 notification channel is part of the deployment, not an afterthought.
 
@@ -153,8 +157,10 @@ kubectl -n argocd port-forward svc/argocd-server 8080:80
 # → http://localhost:8080  (user: admin)
 ```
 
-The UI is reachable only through the port-forward (no public endpoint). Rotate
-the generated password once and delete the bootstrap secret:
+The UI is reachable only through the port-forward (no public endpoint);
+`Connect-DoksPortForward` from the Doks module starts this forward together
+with the three monitoring UIs of step 10. Rotate the generated password once
+and delete the bootstrap secret:
 
 ```sh
 argocd login localhost:8080 --plaintext --username admin
@@ -176,7 +182,10 @@ Point DNS records at that IP — or use nip.io hosts (e.g.
 `auth-staging.203-0-113-10.nip.io`) — and set the `ingress.hosts` **and**
 `ingress.tls[].hosts` values in `charts/auth-stack/values-staging.yaml` /
 `values-prod.yaml` via a pull request (`main` only accepts PRs with green
-validate checks). ArgoCD picks it up after the merge.
+validate checks). ArgoCD picks it up after the merge. `Bootstrap-DoksCluster`
+does the rewrite itself as its last step (`Sync-DoksHostname` repeats it): it
+waits for the IP and writes it into both overlays and `loadtest/job.yaml`; the
+pull request is still yours.
 
 ## 7. TLS (automatic)
 
@@ -229,19 +238,23 @@ kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 909
 kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-alertmanager 9093:9093
 ```
 
+With the Doks module, `Connect-DoksPortForward` starts these three and the
+ArgoCD forward together in one window (Ctrl+C ends them all; `-Background`
+keeps them, `Disconnect-DoksPortForward` stops them).
+
 Grafana takes the credentials from the `grafana-admin` Secret (step 2); the
 dashboards of this repo live in the **auth-stack** folder (user-mgmt-service,
-Kubernetes resources, k6 load test) and the **platform** folder (cluster
+auth-portal, request flow, Kubernetes resources, k6 load test) and the **platform** folder (cluster
 capacity, edge: Traefik + cert-manager, ArgoCD, Kyverno Metrics), next to the
 bundled kube-prometheus set. That the application is really scraped is visible in
-Prometheus → Status → Target health (`serviceMonitor/auth-staging/…`,
-`podMonitor/auth-staging/…` and the `auth-prod` counterparts must be *up*;
+Prometheus → Status → Target health (`podMonitor/auth-staging/auth-backend/0`,
+`podMonitor/auth-staging/auth-frontend/0` and the `auth-prod` counterparts must be *up*;
 the platform jobs `traefik`, `cert-manager`, `cainjector`, `webhook`,
 `argocd-*-metrics`, `kyverno-admission-controller` and
 `kyverno-reports-controller` next to them) and here:
 
 ```sh
-kubectl -n auth-prod get servicemonitor,prometheusrule
+kubectl -n auth-prod get podmonitor,prometheusrule
 kubectl -n monitoring logs sts/prometheus-monitoring-kube-prometheus -c prometheus | tail
 ```
 
