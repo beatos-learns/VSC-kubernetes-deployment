@@ -2,6 +2,8 @@
   Application images come from the CI repo's registry path only, carry a tag
   or digest and never `latest`: the tag is the promotion interface of this
   repository, and validate.yml can only vouch for references it can resolve.
+  One exception by digest: the MySQL client of the module service's schema
+  seed (images.mysqlClient), the stack ships no MySQL image of its own.
   cert-manager's HTTP-01 solver pods run in the same namespaces with their own
   image; the precondition lets them through by their label. A precondition
   rather than an exclude selector, because a selector anywhere in a rule
@@ -9,6 +11,7 @@
   Pod level.
 */}}
 {{- $registry := .Values.images.registry }}
+{{- $allowed := printf "%s/* | %s:*@sha256:*" $registry .Values.images.mysqlClient }}
 {{- $match := dict "any" (list (dict "resources" (dict "kinds" (list "Pod") "namespaces" .Values.applicationNamespaces))) }}
 apiVersion: kyverno.io/v1
 kind: ClusterPolicy
@@ -23,7 +26,8 @@ metadata:
     policies.kyverno.io/subject: Pod
     policies.kyverno.io/description: >-
       Containers in the application namespaces run images from
-      {{ $registry }} only, referenced by a tag or digest and never by `latest`.
+      {{ $registry }} only (plus {{ .Values.images.mysqlClient }} by digest),
+      referenced by a tag or digest and never by `latest`.
 spec:
   background: true
   rules:
@@ -34,13 +38,13 @@ spec:
         {{- include "policies.notAcmeSolver" . | nindent 8 }}
       validate:
         failureAction: Enforce
-        message: images must come from {{ $registry }}
+        message: images must come from {{ $registry }} ({{ .Values.images.mysqlClient }} only by digest)
         pattern:
           spec:
             =(initContainers):
-              - image: "{{ $registry }}/*"
+              - image: {{ $allowed | quote }}
             containers:
-              - image: "{{ $registry }}/*"
+              - image: {{ $allowed | quote }}
     - name: tag-or-digest
       match:
         {{- toYaml $match | nindent 8 }}

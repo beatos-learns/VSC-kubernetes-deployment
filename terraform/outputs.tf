@@ -50,3 +50,31 @@ output "database_credentials" {
     }
   }
 }
+
+output "modules_database" {
+  description = "Managed MySQL of the module service: private endpoint, the database per environment and the cluster CA the service verifies the server against - the mysql-* and database-url keys of the auth-stack-secrets Secret (bootstrap/README.md step 2)."
+  value = {
+    host      = digitalocean_database_cluster.mysql.private_host
+    port      = digitalocean_database_cluster.mysql.port
+    version   = digitalocean_database_cluster.mysql.version
+    databases = { for env, db in digitalocean_database_db.modules : env => db.name }
+    ca        = data.digitalocean_database_ca.mysql.certificate
+  }
+}
+
+output "modules_database_credentials" {
+  description = "Login role per environment and the cluster admin of the managed MySQL. Sensitive: read with terraform output -json modules_database_credentials."
+  sensitive   = true
+  value = {
+    admin = {
+      user     = digitalocean_database_cluster.mysql.user
+      password = digitalocean_database_cluster.mysql.password
+    }
+    environments = {
+      for env, user in digitalocean_database_user.modules : env => {
+        user     = user.name
+        password = user.password
+      }
+    }
+  }
+}

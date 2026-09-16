@@ -981,7 +981,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(up{namespace=~\"$namespace\", job=~\"backend|frontend\"})",
+          "expr": "sum(up{namespace=~\"$namespace\", job=~\"backend|frontend|modules\"})",
           "legendFormat": "up",
           "range": true,
           "refId": "A"
@@ -1322,7 +1322,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "count by (namespace, job, app_kubernetes_io_version) (up{namespace=~\"$namespace\", job=~\"backend|frontend\"})",
+          "expr": "count by (namespace, job, app_kubernetes_io_version) (up{namespace=~\"$namespace\", job=~\"backend|frontend|modules\"})",
           "legendFormat": "{{namespace}} {{job}} {{app_kubernetes_io_version}}",
           "range": true,
           "refId": "A"
@@ -1381,7 +1381,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (job, check) (health_check_duration_seconds{namespace=~\"$namespace\", job=~\"backend|frontend\"})",
+          "expr": "max by (job, check) (health_check_duration_seconds{namespace=~\"$namespace\", job=~\"backend|frontend|modules\"})",
           "legendFormat": "{{job}} {{check}}",
           "range": true,
           "refId": "A"
@@ -1453,7 +1453,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (job) (health_snapshot_age_seconds{namespace=~\"$namespace\", job=~\"backend|frontend\"})",
+          "expr": "max by (job) (health_snapshot_age_seconds{namespace=~\"$namespace\", job=~\"backend|frontend|modules\"})",
           "legendFormat": "{{job}} snapshot age",
           "range": true,
           "refId": "A"
@@ -1464,7 +1464,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (job) (health_draining{namespace=~\"$namespace\", job=~\"backend|frontend\"})",
+          "expr": "sum by (job) (health_draining{namespace=~\"$namespace\", job=~\"backend|frontend|modules\"})",
           "legendFormat": "{{job}} pods draining",
           "range": true,
           "refId": "B"

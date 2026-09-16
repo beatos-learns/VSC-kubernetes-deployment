@@ -13,9 +13,10 @@
     "images": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["registry", "signer", "acmeSolver"],
+      "required": ["registry", "mysqlClient", "signer", "acmeSolver"],
       "properties": {
         "registry": { "type": "string", "pattern": "^[a-z0-9.-]+(/[a-z0-9._-]+)+$" },
+        "mysqlClient": { "type": "string", "pattern": "^[a-z0-9.-]+(/[a-z0-9._-]+)+$" },
         "acmeSolver": { "type": "string", "pattern": "^[a-z0-9.-]+(/[a-z0-9._-]+)+$" },
         "signer": {
           "type": "object",

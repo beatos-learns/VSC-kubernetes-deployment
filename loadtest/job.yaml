@@ -1,8 +1,9 @@
 # One k6 run as a Kubernetes Job (Aufgabe 2, Chaos Testing). k6 runs INSIDE the cluster, but
 # targets the environment the way a user does: the public host through the
-# load balancer, Traefik and the frontend's /api proxy, so the whole request
-# path - including how Traefik and the frontend spread requests over the
-# backend replicas - is under test, not just the backend Service.
+# load balancer, Traefik and the frontend's /api proxy (plus the backend's
+# /modules, served by the module service), so the whole request path -
+# including how Traefik and the frontend spread requests over the backend
+# replicas - is under test, not just the backend Service.
 #
 # Per run, edit or `kubectl set env` the values under env: TARGET_URL picks the
 # environment (charts/auth-stack/values-*.yaml ingress host), PEAK_VUS the

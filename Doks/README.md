@@ -48,8 +48,9 @@ so several clusters can be driven side by side.
 
 `Bootstrap-DoksCluster` (alias of `Initialize-DoksCluster`) shadows the
 manual procedure in `bootstrap/README.md`: environment namespaces +
-secrets (the managed database's endpoint and credentials from
-`terraform output`, a random `jwt-secret`, optional GHCR pull secret), the
+secrets (endpoints and credentials of the managed PostgreSQL and MySQL plus
+the MySQL cluster CA from `terraform output`, a random `jwt-secret`, optional
+GHCR pull secret), the
 `monitoring` namespace with Grafana's admin password and the Alertmanager
 notification channel (a webhook.site inbox created on the spot unless
 `-AlertWebhookUrl` names your own), ArgoCD (pinned chart version) from
@@ -59,7 +60,7 @@ into the nip.io hosts of the overlays and the load test (commit that, together
 with `terraform.tfvars`).
 
 ```powershell
-New-DoksCluster | Sync-DoksTerraform            # cluster, then terraform.tfvars + init + apply (adopt it, managed database)
+New-DoksCluster | Sync-DoksTerraform            # cluster, then terraform.tfvars + init + apply (adopt it, managed databases)
 Bootstrap-DoksCluster k8s-test-fra1                # secrets from the Terraform outputs, ArgoCD, root app;
                                                    # alert channel = a webhook.site inbox opened in the browser
 Bootstrap-DoksCluster k8s-test-fra1 `
@@ -85,7 +86,7 @@ from `terraform/` (-TerraformDir).
 | `Wait-DoksNodeReady` | block until N nodes report Ready |
 | `Get-DoksOption` | list valid `Regions` / `Sizes` / `Versions` |
 | `Bootstrap-DoksCluster` | one-time GitOps bootstrap per `bootstrap/README.md` (alias of `Initialize-DoksCluster`) |
-| `Sync-DoksTerraform` | write the cluster into `terraform/terraform.tfvars`, drop a previous cluster from the state, `terraform init` + `apply` (adopt the cluster, managed database); passes the cluster through the pipeline |
+| `Sync-DoksTerraform` | write the cluster into `terraform/terraform.tfvars`, drop a previous cluster from the state, `terraform init` + `apply` (adopt the cluster, managed PostgreSQL + MySQL); passes the cluster through the pipeline |
 | `Sync-DoksHostname` | wait for the Traefik load balancer IP and write it into the nip.io hosts of both overlays and `loadtest/job.yaml` (the bootstrap's last step; standalone to repeat it) |
 | `Set-DoksToken` / `Remove-DoksToken` | store / delete the API token per user |
 | `Connect-DoksAccount` / `Disconnect-DoksAccount` / `Get-DoksAccount` | session auth against the DO API |

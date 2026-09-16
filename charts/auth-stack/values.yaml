@@ -4,7 +4,7 @@
 #
 # Everything under `generic-stack:` is passed to the dependency chart and is
 # validated by its values.schema.json. The other top-level keys drive this
-# wrapper chart's own templates (namespace policy, edge policy, schema seed)
+# wrapper chart's own templates (namespace policy, edge policy, schema seeds)
 # and are validated by ./values.schema.json.
 # ---------------------------------------------------------------------------
 
@@ -15,7 +15,7 @@ generic-stack:
 
   components:
     # Off: the cluster-wide Traefik ingress controller
-    # (argocd/infra-traefik.yaml) serves the frontend Ingress below.
+    # (argocd/infra-traefik.yaml) serves the Ingresses below.
     proxy:
       enabled: false
 
@@ -29,7 +29,8 @@ generic-stack:
       # Secret created out-of-band (bootstrap/README.md): the managed database's
       # endpoint and login role (db-url, db-user, db-password) plus jwt-secret.
       # The chart's own datasource wiring (in-cluster db component) is nulled
-      # out here; the Secret's keys take its place.
+      # out here; the Secret's keys take its place. MODULE_SERVICE_URL stays
+      # the chart's: the modules Service of this release (Aufgabe 6).
       existingSecret: auth-stack-secrets
       env:
         SPRING_DATASOURCE_URL: null
@@ -48,6 +49,16 @@ generic-stack:
         limits:
           cpu: 500m
           memory: 256Mi
+      # The REST API at the edge, next to the frontend on the same host: the
+      # module endpoints (/modules, /users/{id}/modules/{moduleId}) are not
+      # proxied by the frontend, so a client reaches them here (Aufgabe 6).
+      # TLS reuses the environment's certificate (issued for the frontend
+      # Ingress); hosts, paths and tls are set per environment.
+      ingress:
+        enabled: true
+        className: traefik
+        annotations:
+          traefik.ingress.kubernetes.io/router.middlewares: '{{ .Release.Namespace }}-{{ .Release.Name }}-security-headers@kubernetescrd'
 
     frontend:
       minReadySeconds: 5
@@ -66,6 +77,30 @@ generic-stack:
           # security-headers Middleware rendered by templates/middleware.yaml
           traefik.ingress.kubernetes.io/router.middlewares: '{{ .Release.Namespace }}-{{ .Release.Name }}-security-headers@kubernetescrd'
         # hosts and tls are set per environment
+
+    # The module service (Aufgabe 6): in-cluster only, called by the backend
+    # through its Service. Its managed MySQL (terraform/) is reached with the
+    # connection URL and the cluster CA from the environment Secret - the only
+    # pod that receives those keys (secretMount.keys); the backend has none.
+    modules:
+      existingSecret: auth-stack-secrets
+      env:
+        MYSQL_SSL_MODE: verify-identity
+        MYSQL_SSL_CA: /run/secrets/mysql-ca
+      secretMount:
+        keys:
+          - database-url
+          - mysql-ca
+      minReadySeconds: 5
+      # Vertical sizing: one uvicorn event loop, so CPU beyond one core buys
+      # nothing; memory covers the native binary (~60Mi idle) plus the pool.
+      resources:
+        requests:
+          cpu: 100m
+          memory: 96Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
 
 # ---------------------------------------------------------------------------
 # Edge policy (rendered by templates/middleware.yaml)
@@ -101,6 +136,7 @@ dbSeed:
       -- user-mgmt-service: schema + authority seed (PostgreSQL 16)
       --
       -- Target  : github.com/yagan93/user_mgmt_service @ 747b7f4e3d1f09cc4434a75d9c991ea091fda548
+      --           + the CI repo's patches/0001-module-assignment.patch (users_module)
       --           Spring Boot 4.1.0-M3 / Hibernate ORM 7.2.7.Final / PostgreSQL JDBC 42.7.10
       -- Mounted : charts/auth-stack dbSeed.files -> /seed in the db-seed Job (ArgoCD PreSync hook)
       -- Runner  : psql -v ON_ERROR_STOP=1 -v app_user=<login role> -f <file>, as the cluster
@@ -170,6 +206,16 @@ dbSeed:
           CONSTRAINT FKiu0xsee0dmwa28nffgyf4bcvc FOREIGN KEY (users_id) REFERENCES users (id)
       );
 
+      -- Module assignments (@ElementCollection Set<UUID> User.moduleIds, collection table
+      -- users_module): the module ids live in the module service's MySQL, so there is no
+      -- foreign key to them here. The primary key states the Set semantics.
+      CREATE TABLE IF NOT EXISTS users_module (
+          users_id  uuid NOT NULL,
+          module_id uuid NOT NULL,
+          PRIMARY KEY (users_id, module_id),
+          CONSTRAINT FKhy3sfjmxbx62dsi1nm1ub26ts FOREIGN KEY (users_id) REFERENCES users (id)
+      );
+
       -- 2. authorities (the names UserController's @PreAuthorize checks) -----------------
       INSERT INTO authority (id, name) VALUES
           ('b7c1e2a4-9d3f-4c6e-8a15-2f7d9e0b4c63', 'USER_MODIFY'),
@@ -216,10 +262,85 @@ dbSeed:
       COMMIT;
 
 # ---------------------------------------------------------------------------
+# Schema seed of the module service (templates/mysql-seed-job.yaml, Aufgabe 6):
+# the same PreSync mechanism against the managed MySQL. The service runs no
+# migrations and its `schema` health check stays red until the `modules` table
+# exists, so the upstream schema.sql (idempotent: IF NOT EXISTS / INSERT IGNORE)
+# is applied before every sync, as the cluster admin from the Secret. The
+# client is Docker's official MySQL image, pinned by digest - the one image
+# outside the CI registry, admitted as such by charts/policies (images.mysqlClient).
+# ---------------------------------------------------------------------------
+mysqlSeed:
+  enabled: true
+  image:
+    registry: docker.io
+    repository: library/mysql
+    tag: "8.4.11"
+    digest: sha256:85b9bf2e29cf836ecb8c2a15a935d4ba0c606631dff1dd79531a11983c638f2a
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+  files:
+    10-module-service-schema.sql: |
+      -- ============================================================================
+      -- module-service: schema + module seed (MySQL 8)
+      --
+      -- Source  : github.com/yagan93/module_service @ e86baa4aa0f0bc53b0685edbb05a1c3a8d4b9494,
+      --           schema.sql verbatim (the service never creates or migrates tables)
+      -- Mounted : charts/auth-stack mysqlSeed.files -> /seed in the mysql-seed Job (ArgoCD PreSync hook)
+      -- Runner  : mysql --ssl-mode=<components.modules.env.MYSQL_SSL_MODE> < <file>, as the cluster
+      --           admin of the managed database, before every sync
+      -- Idempotent: every statement tolerates re-execution.
+      -- ============================================================================
+
+      CREATE TABLE IF NOT EXISTS modules (
+          id CHAR(36) NOT NULL,
+          code VARCHAR(32) NOT NULL,
+          name VARCHAR(150) NOT NULL,
+          description TEXT NULL,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (id),
+          UNIQUE INDEX ix_modules_code (code)
+      );
+
+      INSERT IGNORE INTO modules (id, code, name, description)
+      VALUES
+          (
+              'c02f58f2-3aca-4f1e-8076-bacf6f1999e6',
+              'CLOUD-ARCH',
+              'Cloud Architecture',
+              'Designing reliable and scalable cloud systems'
+          ),
+          (
+              '6d5889ee-f4c7-44d7-a887-da92d2a51ac4',
+              'DATABASES',
+              'Database Systems',
+              'Relational data modeling and SQL fundamentals'
+          ),
+          (
+              '674ca4e0-6334-4b12-aa83-d97895049b8a',
+              'SECURITY',
+              'Application Security',
+              'Secure software design and common vulnerabilities'
+          ),
+          (
+              '4b9ff45a-d90f-42b0-8b72-20f0b92b6027',
+              'WEB-DEV',
+              'Web Development',
+              'Building modern web applications and APIs'
+          );
+
+# ---------------------------------------------------------------------------
 # Observability (Aufgabe 7): one PodMonitor per component points the cluster
 # Prometheus (ns monitoring, charts/monitoring) at the admin port every image
 # serves /metrics on (templates/podmonitor.yaml), the PrometheusRule states
-# what counts as broken. Both are deployment policy, so the scrape and the
+# what counts as broken - for the backend, the frontend, the module service
+# and the hops between them. Both are deployment policy, so the scrape and the
 # thresholds live here and in the overlays - not in the application chart.
 # ---------------------------------------------------------------------------
 monitoring:
@@ -245,8 +366,8 @@ namespacePolicy:
   # Hard caps per namespace (Aufgabe 5, Namespaces). With a cpu/memory quota active every
   # pod MUST declare requests and limits (the LimitRange below fills gaps).
   # Sizing rule for limits: sum(maxReplicas x limits) + one rolling-update
-  # surge pod per Deployment + the seed Job + the ACME solver pod. No storage:
-  # the database is managed, nothing in the namespace claims a volume.
+  # surge pod per Deployment + the two seed Jobs + the ACME solver pod. No
+  # storage: both databases are managed, nothing in the namespace claims a volume.
   resourceQuota:
     enabled: true
     requests:
@@ -288,8 +409,14 @@ namespacePolicy:
     monitoring:
       enabled: true
       namespace: monitoring
-    # the managed database's private endpoint: an address inside the cluster's
-    # VPC (DigitalOcean's private range), on its PostgreSQL port
+    # the managed PostgreSQL's private endpoint: an address inside the cluster's
+    # VPC (DigitalOcean's private range), on its PostgreSQL port - the backend's
+    # and the seed Job's only egress besides DNS
     database:
+      cidr: 10.0.0.0/8
+      port: 25060
+    # the managed MySQL of the module service, same VPC, DigitalOcean's MySQL
+    # port - reached by the modules pods and their seed Job only
+    modulesDatabase:
       cidr: 10.0.0.0/8
       port: 25060

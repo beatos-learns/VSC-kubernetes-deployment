@@ -5,7 +5,7 @@
   serves /metrics on its admin port (the port the probes use), so the cluster
   Prometheus (ns monitoring, argocd/infra-monitoring.yaml) scrapes the pods
   directly - every HPA replica, no Service port needed. `job` is the component
-  name (backend, frontend) on every series, and the pods' name/version labels
+  name (backend, frontend, modules) on every series, and the pods' name/version labels
   travel with the series so dashboards can group by component and by running
   image tag. An extra container port named `metrics` (the proxy's Traefik
   port 9101) is scraped as a second endpoint. The default-deny NetworkPolicy

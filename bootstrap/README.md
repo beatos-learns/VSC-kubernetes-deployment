@@ -27,22 +27,33 @@ its id and version go into `terraform/terraform.tfvars`, then
 ## 2. Namespaces and secrets (out-of-band, never in git)
 
 Each environment namespace needs one pre-created Secret
-(`existingSecret: auth-stack-secrets`): the managed database's endpoint and
+(`existingSecret: auth-stack-secrets`): the managed PostgreSQL's endpoint and
 login role for the backend (`db-url`, `db-user`, `db-password`), the seed
 Job's connection data and admin credentials (`db-host`, `db-port`, `db-name`,
-`db-admin-user`, `db-admin-password`) and a random `jwt-secret`. The database
-values are Terraform outputs (`terraform/README.md`, `terraform apply` first).
-Create the Secret from a manifest on stdin — never with `--from-literal` — so
-the values stay out of shell history and process listings:
+`db-admin-user`, `db-admin-password`), the managed MySQL of the module
+service as one connection URL (`database-url`) with the cluster CA
+(`mysql-ca`) and its seed Job's endpoint and admin credentials (`mysql-host`,
+`mysql-port`, `mysql-name`, `mysql-admin-user`, `mysql-admin-password`), and
+a random `jwt-secret`. The database values are Terraform outputs
+(`terraform/README.md`, `terraform apply` first). Each pod receives only the
+keys it names: the backend never sees the MySQL keys, the module service only
+`database-url` and `mysql-ca`. Create the Secret from a manifest on stdin —
+never with `--from-literal` — so the values stay out of shell history and
+process listings:
 
 ```sh
 db=$(terraform -chdir=terraform output -json database)
 creds=$(terraform -chdir=terraform output -json database_credentials)
+mdb=$(terraform -chdir=terraform output -json modules_database)
+mcreds=$(terraform -chdir=terraform output -json modules_database_credentials)
 for ns in auth-staging auth-prod; do
   env=${ns#auth-}
   kubectl create namespace "$ns" 2>/dev/null || true
   kubectl -n "$ns" get secret auth-stack-secrets >/dev/null 2>&1 && continue
   host=$(jq -r .host <<<"$db"); port=$(jq -r .port <<<"$db"); name=$(jq -r ".databases.$env" <<<"$db")
+  mhost=$(jq -r .host <<<"$mdb"); mport=$(jq -r .port <<<"$mdb"); mname=$(jq -r ".databases.$env" <<<"$mdb")
+  muser=$(jq -r ".environments.$env.user" <<<"$mcreds")
+  mpass=$(jq -r ".environments.$env.password | @uri" <<<"$mcreds")   # URL-encoded inside database-url
   kubectl create -f - <<EOF
 apiVersion: v1
 kind: Secret
@@ -60,6 +71,14 @@ stringData:
   db-admin-user: "$(jq -r .admin.user <<<"$creds")"
   db-admin-password: "$(jq -r .admin.password <<<"$creds")"
   jwt-secret: "$(openssl rand -base64 48)"
+  mysql-host: "$mhost"
+  mysql-port: "$mport"
+  mysql-name: "$mname"
+  mysql-admin-user: "$(jq -r .admin.user <<<"$mcreds")"
+  mysql-admin-password: "$(jq -r .admin.password <<<"$mcreds")"
+  mysql-ca: |
+$(jq -r .ca <<<"$mdb" | sed 's/^/    /')
+  database-url: "mysql+pymysql://$muser:$mpass@$mhost:$mport/$mname?charset=utf8mb4"
 EOF
 done
 ```
@@ -112,8 +131,8 @@ The GHCR packages are public; no pull secret is needed. (For private packages:
 `read:packages` fine-grained PAT, and set `global.imagePullSecrets` in
 `charts/auth-stack/values.yaml`.)
 
-> The admin credentials are read only by the seed Job (an ArgoCD PreSync
-> hook); the backend pods never see them.
+> The admin credentials are read only by the seed Jobs (ArgoCD PreSync
+> hooks); the application pods never see them.
 
 ## 3. Install ArgoCD (dedicated namespace, Aufgabe 3 ArgoCD)
 
@@ -199,19 +218,24 @@ kubectl -n auth-staging get certificate,challenge
 
 ## 8. Backups and restore
 
-Backups are the provider's: the managed cluster takes daily backups (7 days
-retained) and supports point-in-time recovery. A restore creates a *new*
-database cluster from a backup or a timestamp:
+Backups are the provider's: both managed clusters (PostgreSQL for the users,
+MySQL for the modules) take daily backups (7 days retained) and support
+point-in-time recovery. A restore creates a *new* database cluster from a
+backup or a timestamp:
 
 ```sh
 doctl databases backups list <cluster-id>            # id: terraform -chdir=terraform output
 doctl databases create auth-restore --engine pg --version 16 --region fra1 --size db-s-1vcpu-1gb \
   --restore-from-cluster-name k8s-test-fra1-pg --restore-from-timestamp <RFC3339>
+doctl databases create modules-restore --engine mysql --version 8 --region fra1 --size db-s-1vcpu-1gb \
+  --restore-from-cluster-name k8s-test-fra1-mysql --restore-from-timestamp <RFC3339>
 ```
 
 Pointing an environment at the restored cluster is a change of its Secret's
-`db-*` keys followed by `rollout restart deployment/auth-backend` — or,
-declaratively, adopting the restored cluster in `terraform/database.tf`.
+`db-*` keys followed by `rollout restart deployment/auth-backend` (for the
+MySQL: `database-url`, `mysql-ca`, `mysql-*`, then
+`rollout restart deployment/auth-modules`) — or, declaratively, adopting the
+restored cluster in `terraform/database.tf`.
 
 ## 9. Schema changes
 
@@ -223,6 +247,13 @@ matching idempotent `ALTER` / `CREATE ... IF NOT EXISTS` statements in that
 file — the overlays' tag bump and the migration belong in the same PR, and
 the hook applies them before the new pods start. The last run's log:
 `kubectl -n <ns> logs job/auth-db-seed`.
+
+The module service's MySQL works the same way (`mysqlSeed.files`, the
+upstream `schema.sql` with the four seeded modules, applied by
+`templates/mysql-seed-job.yaml` with the official MySQL client image): the
+service runs no migrations and its `schema` health check keeps `/readyz` red
+until the `modules` table exists, so the hook runs before every sync. Log:
+`kubectl -n <ns> logs job/auth-mysql-seed`.
 
 ## 10. Monitoring
 
@@ -244,11 +275,12 @@ keeps them, `Disconnect-DoksPortForward` stops them).
 
 Grafana takes the credentials from the `grafana-admin` Secret (step 2); the
 dashboards of this repo live in the **auth-stack** folder (user-mgmt-service,
-auth-portal, request flow, Kubernetes resources, k6 load test) and the **platform** folder (cluster
+auth-portal, module-service, request flow, Kubernetes resources, k6 load test) and the **platform** folder (cluster
 capacity, edge: Traefik + cert-manager, ArgoCD, Kyverno Metrics), next to the
 bundled kube-prometheus set. That the application is really scraped is visible in
 Prometheus → Status → Target health (`podMonitor/auth-staging/auth-backend/0`,
-`podMonitor/auth-staging/auth-frontend/0` and the `auth-prod` counterparts must be *up*;
+`podMonitor/auth-staging/auth-frontend/0`, `podMonitor/auth-staging/auth-modules/0`
+and the `auth-prod` counterparts must be *up*;
 the platform jobs `traefik`, `cert-manager`, `cainjector`, `webhook`,
 `argocd-*-metrics`, `kyverno-admission-controller` and
 `kyverno-reports-controller` next to them) and here:
@@ -326,6 +358,37 @@ and Kyverno refuses any change to its webhook configurations that does not
 come from its own ServiceAccount. A policy changes the way everything else
 does - in `charts/policies`, through a PR that `validate.yml` gates.
 
+## 12. Module assignment end to end (Aufgabe 6)
+
+The backend's API is on the environment's host next to the frontend
+(`/users`, `/modules`; the frontend proxies only its own `/api/*` routes), so
+a client walks the whole chain: client → Traefik → user-mgmt-service →
+module service → managed MySQL. Log in for a token (the backend returns it
+in the `Authorization` header; the frontend keeps the same JWT in its cookie),
+list the modules the module service knows, then assign one:
+
+```sh
+host=https://auth-staging.<lb-ip>.nip.io
+token=$(curl -sk -D - -o /dev/null -X POST "$host/users/login" -H 'Content-Type: application/json' \
+  -d '{"email":"<user>","password":"<password>"}' | sed -n 's/^Authorization: Bearer //Ip' | tr -d '\r')
+curl -sk "$host/modules" -H "Authorization: Bearer $token" | jq .              # the four seeded modules, via the module service
+me=$(curl -sk "$host/users/me" -H "Authorization: Bearer $token" | jq -r .id)
+curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $token" \
+  "$host/users/$me/modules/c02f58f2-3aca-4f1e-8076-bacf6f1999e6"              # 200: CLOUD-ARCH checked with the module service, assigned
+curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $token" \
+  "$host/users/$me/modules/00000000-0000-0000-0000-000000000000"              # 404: unknown module, nothing assigned
+curl -sk "$host/users/me" -H "Authorization: Bearer $token" | jq .moduleIds
+```
+
+A module service that does not answer (pods down, MySQL health check red)
+turns the module endpoints into `503` after the client's retries, while
+every other route of the backend keeps working; the breaker's effect and the
+retries are on the **module-service** dashboard (Called by user-mgmt-service)
+and behind `UserMgmtServiceModulesHopFailing` / `ModuleServiceDown`. Assigning
+a user a module is allowed for the user themselves and for `USER_MODIFY`
+holders; creating a module (`POST /modules`) needs `USER_MODIFY` and answers
+`409` on a duplicate code.
+
 ## Rotation
 
 | Secret | Procedure |
@@ -333,6 +396,8 @@ does - in `charts/policies`, through a PR that `validate.yml` gates.
 | `jwt-secret` | update the key in `auth-stack-secrets`, then `kubectl -n <ns> rollout restart deployment/auth-backend` — all sessions are invalidated |
 | `db-password` | reset the role on the managed cluster (`doctl databases user reset <cluster-id> auth_<env>`), copy the new value into the Secret, then `rollout restart deployment/auth-backend`; `terraform apply` afterwards refreshes the value in state |
 | `db-admin-password` | `doctl databases user reset <cluster-id> doadmin`, update the key in every environment's Secret; the next sync's seed Job uses it |
+| `database-url` (MySQL role) | `doctl databases user reset <mysql-cluster-id> modules_<env>`, rewrite the URL in the Secret (password URL-encoded), then `rollout restart deployment/auth-modules` |
+| `mysql-admin-password` | `doctl databases user reset <mysql-cluster-id> doadmin`, update the key in every environment's Secret; the next sync's MySQL seed Job uses it |
 | ArgoCD admin | `argocd account update-password` (step 5) |
 | `grafana-admin` | update the key, then `kubectl -n monitoring rollout restart deployment/monitoring-grafana` |
 | `alertmanager-webhook` | update the key; the file is re-read per notification (step 10) |

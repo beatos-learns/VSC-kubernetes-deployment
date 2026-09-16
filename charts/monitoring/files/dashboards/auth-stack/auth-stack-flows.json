@@ -1,7 +1,7 @@
 {
   "uid": "vsc-auth-stack-flows",
   "title": "auth-stack - request flow",
-  "description": "One request, every hop: Traefik at the edge, the frontend, the frontend -> backend hop, the backend and its database hop, each measured by the component that owns it with the same histogram buckets. Rate, p95 and failure share per hop side by side, the per-hop latency lines that show where time is spent, and the route tables of every hop.",
+  "description": "One request, every hop: Traefik at the edge, the frontend, the frontend -> backend hop, the backend and its database hop, plus the module branch the backend opens for module assignments (backend -> module service -> its MySQL), each measured by the component that owns it with the same histogram buckets. Rate, p95 and failure share per hop side by side, the per-hop latency lines that show where time is spent, and the routes seen at every hop.",
   "tags": [
     "auth-stack",
     "application"
@@ -1098,6 +1098,618 @@
       ]
     },
     {
+      "id": 32,
+      "type": "stat",
+      "title": "user-mgmt-service -> modules (client)",
+      "description": "Requests per second entering this hop.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m]))",
+          "legendFormat": "req/s",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 33,
+      "type": "stat",
+      "title": "module-service (server)",
+      "description": "Requests per second entering this hop.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "req/s",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 34,
+      "type": "stat",
+      "title": "modules -> MySQL (statements)",
+      "description": "Requests per second entering this hop.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 15
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(db_client_statements_seconds_count{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "req/s",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 35,
+      "type": "stat",
+      "title": "user-mgmt-service -> modules (client)",
+      "description": "p95 latency measured at this hop over 5 minutes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_client_requests_seconds_bucket{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m])))",
+          "legendFormat": "p95",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 36,
+      "type": "stat",
+      "title": "module-service (server)",
+      "description": "p95 latency measured at this hop over 5 minutes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"modules\"}[5m])))",
+          "legendFormat": "p95",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 37,
+      "type": "stat",
+      "title": "modules -> MySQL (statements)",
+      "description": "p95 latency measured at this hop over 5 minutes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 19
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(db_client_statements_seconds_bucket{namespace=~\"$namespace\", job=\"modules\"}[5m])))",
+          "legendFormat": "p95",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 38,
+      "type": "stat",
+      "title": "user-mgmt-service -> modules (client)",
+      "description": "Share of requests this hop reports as failed (5xx at the edge and the servers, 5xx or transport error on the client hop, ERROR state on the repository).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\", outcome=~\"SERVER_ERROR|UNKNOWN\"}[5m])) / sum (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m]))",
+          "legendFormat": "failed",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 39,
+      "type": "stat",
+      "title": "module-service (server)",
+      "description": "Share of requests this hop reports as failed (5xx at the edge and the servers, 5xx or transport error on the client hop, ERROR state on the repository).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 8,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"modules\", status=~\"5..\"}[5m])) / sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "failed",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "type": "stat",
+      "title": "modules -> MySQL (statements)",
+      "description": "Share of SQL statements the driver answered with an error (a duplicate module code on create counts as one).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 16,
+        "y": 23
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 2,
+          "min": 0,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum (rate(db_client_statement_errors_total{namespace=~\"$namespace\", job=\"modules\"}[5m])) / sum (rate(db_client_statements_seconds_count{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "failed",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "id": 17,
       "type": "row",
       "title": "Along the flow",
@@ -1106,7 +1718,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 15
+        "y": 27
       },
       "panels": []
     },
@@ -1114,7 +1726,7 @@
       "id": 18,
       "type": "timeseries",
       "title": "Latency (p95) by hop",
-      "description": "The same request measured at every hop: the outer lines include everything inside them, so the vertical gap between two lines is the time spent in the component between them.",
+      "description": "The same request measured at every hop: the outer lines include everything inside them, so the vertical gap between two lines is the time spent in the component between them. The module branch (backend -> module service -> MySQL) only carries the module endpoints, so its lines sit apart from the main flow.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1123,7 +1735,7 @@
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 16
+        "y": 28
       },
       "fieldConfig": {
         "defaults": {
@@ -1210,6 +1822,39 @@
           "legendFormat": "backend -> database (repository)",
           "range": true,
           "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_client_requests_seconds_bucket{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m])))",
+          "legendFormat": "user-mgmt-service -> modules (client)",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"modules\"}[5m])))",
+          "legendFormat": "module-service (server)",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(db_client_statements_seconds_bucket{namespace=~\"$namespace\", job=\"modules\"}[5m])))",
+          "legendFormat": "modules -> MySQL (statements)",
+          "range": true,
+          "refId": "H"
         }
       ]
     },
@@ -1226,7 +1871,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 25
+        "y": 37
       },
       "fieldConfig": {
         "defaults": {
@@ -1329,6 +1974,42 @@
           "range": false,
           "refId": "E",
           "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_client_requests_seconds_bucket{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m])))",
+          "legendFormat": "user-mgmt-service -> modules (client)",
+          "range": false,
+          "refId": "F",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"modules\"}[5m])))",
+          "legendFormat": "module-service (server)",
+          "range": false,
+          "refId": "G",
+          "instant": true
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(db_client_statements_seconds_bucket{namespace=~\"$namespace\", job=\"modules\"}[5m])))",
+          "legendFormat": "modules -> MySQL (statements)",
+          "range": false,
+          "refId": "H",
+          "instant": true
         }
       ]
     },
@@ -1336,7 +2017,7 @@
       "id": 20,
       "type": "timeseries",
       "title": "Request rate by hop",
-      "description": "Requests per second at every hop. Edge > frontend means Traefik answered some requests itself (redirects, TLS challenges); frontend > client hop is the share served without the backend (pages, static files); one backend call per proxied request otherwise.",
+      "description": "Requests per second at every hop. Edge > frontend means Traefik answered some requests itself (redirects, TLS challenges); frontend > client hop is the share served without the backend (pages, static files); one backend call per proxied request otherwise. Client hop > module service means retries (or a circuit breaker that opened after failures).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1345,7 +2026,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 25
+        "y": 37
       },
       "fieldConfig": {
         "defaults": {
@@ -1431,6 +2112,39 @@
           "legendFormat": "backend -> database (repository)",
           "range": true,
           "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m]))",
+          "legendFormat": "user-mgmt-service -> modules (client)",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "module-service (server)",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(db_client_statements_seconds_count{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "modules -> MySQL (statements)",
+          "range": true,
+          "refId": "H"
         }
       ]
     },
@@ -1447,7 +2161,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 33
+        "y": 45
       },
       "fieldConfig": {
         "defaults": {
@@ -1533,6 +2247,39 @@
           "legendFormat": "backend -> database (repository)",
           "range": true,
           "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\", outcome=~\"SERVER_ERROR|UNKNOWN\"}[5m])) / sum (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m]))",
+          "legendFormat": "user-mgmt-service -> modules (client)",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"modules\", status=~\"5..\"}[5m])) / sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "module-service (server)",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum (rate(db_client_statement_errors_total{namespace=~\"$namespace\", job=\"modules\"}[5m])) / sum (rate(db_client_statements_seconds_count{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "modules -> MySQL (statements)",
+          "range": true,
+          "refId": "H"
         }
       ]
     },
@@ -1549,7 +2296,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 33
+        "y": 45
       },
       "fieldConfig": {
         "defaults": {
@@ -1624,6 +2371,28 @@
           "legendFormat": "user-mgmt-service (server)",
           "range": true,
           "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(http_client_response_bytes_total{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m]))",
+          "legendFormat": "user-mgmt-service -> modules (client)",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum (rate(http_server_response_bytes_total{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "module-service (server)",
+          "range": true,
+          "refId": "F"
         }
       ]
     },
@@ -1636,7 +2405,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 41
+        "y": 53
       },
       "panels": []
     },
@@ -1653,7 +2422,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 54
       },
       "fieldConfig": {
         "defaults": {
@@ -1808,7 +2577,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 49
+        "y": 61
       },
       "fieldConfig": {
         "defaults": {
@@ -1994,7 +2763,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 49
+        "y": 61
       },
       "fieldConfig": {
         "defaults": {
@@ -2180,7 +2949,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 70
       },
       "fieldConfig": {
         "defaults": {
@@ -2335,7 +3104,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 70
       },
       "fieldConfig": {
         "defaults": {
@@ -2478,6 +3247,347 @@
       ]
     },
     {
+      "id": 41,
+      "type": "table",
+      "title": "backend -> modules: proxied calls",
+      "description": "The module hop, by the module service's route template as the backend sees it (retries included).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 78
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "req/s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "reqps"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "failed %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "req/s"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (uri) (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m]))",
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum by (uri) (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\", outcome=~\"SERVER_ERROR|UNKNOWN\"}[5m])) / sum by (uri) (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m]))",
+          "legendFormat": "",
+          "range": false,
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, uri) (rate(http_client_requests_seconds_bucket{namespace=~\"$namespace\", job=\"backend\", peer=\"modules\"}[5m])))",
+          "legendFormat": "",
+          "range": false,
+          "refId": "C",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "req/s",
+              "Value #B": "failed %",
+              "Value #C": "p95"
+            },
+            "indexByName": {
+              "uri": 0,
+              "req/s": 1,
+              "failed %": 2,
+              "p95": 3
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "type": "table",
+      "title": "module-service: routes",
+      "description": "The module service's own route table (server side): /api/v1/modules and the module by id, plus the OpenAPI routes.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 78
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "req/s"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "reqps"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5xx %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "p95"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "in flight"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "req/s"
+          }
+        ]
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (uri) (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "",
+          "range": false,
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "100 * sum by (uri) (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"modules\", status=~\"5..\"}[5m])) / sum by (uri) (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"modules\"}[5m]))",
+          "legendFormat": "",
+          "range": false,
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"modules\"}[5m])))",
+          "legendFormat": "",
+          "range": false,
+          "refId": "C",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (uri) (http_server_requests_active{namespace=~\"$namespace\", job=\"modules\"})",
+          "legendFormat": "",
+          "range": false,
+          "refId": "D",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "req/s",
+              "Value #B": "5xx %",
+              "Value #C": "p95",
+              "Value #D": "in flight"
+            },
+            "indexByName": {
+              "uri": 0,
+              "req/s": 1,
+              "5xx %": 2,
+              "p95": 3,
+              "in flight": 4
+            }
+          }
+        }
+      ]
+    },
+    {
       "id": 29,
       "type": "row",
       "title": "Traffic at the edge",
@@ -2486,7 +3596,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 66
+        "y": 86
       },
       "panels": []
     },
@@ -2503,7 +3613,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 67
+        "y": 87
       },
       "fieldConfig": {
         "defaults": {
@@ -2572,7 +3682,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 67
+        "y": 87
       },
       "fieldConfig": {
         "defaults": {

@@ -2,24 +2,30 @@
 {{- if .enabled }}
 {{/*
   Namespace isolation (Aufgabe 5, Namespaces): deny all ingress AND egress, then allow only
-  the flows of the stack: edge -> frontend -> backend -> managed database (its
-  private endpoint in the cluster's VPC), the seed Job -> managed database,
-  DNS for everyone, cert-manager's HTTP-01 solver from the edge, metrics from
-  a monitoring namespace. Ports come from the generic-stack component
-  definitions and the database block. Kubelet probes come from the node
-  (unaffected).
+  the flows of the stack: edge -> frontend -> backend -> managed PostgreSQL
+  (its private endpoint in the cluster's VPC), edge -> backend (the API paths),
+  backend -> modules -> managed MySQL (Aufgabe 6: the backend reaches the
+  module service through its Service only and never the MySQL endpoint),
+  each seed Job -> its managed database, DNS for everyone, cert-manager's
+  HTTP-01 solver from the edge, metrics from a monitoring namespace. Ports
+  come from the generic-stack component definitions and the database blocks.
+  Kubelet probes come from the node (unaffected).
 */}}
 {{- $gs := index $.Values "generic-stack" }}
 {{- $ports := dict
       "frontend" $gs.components.frontend.ports.main.containerPort
       "backend"  $gs.components.backend.ports.main.containerPort
+      "modules"  $gs.components.modules.ports.main.containerPort
       "admin"    $gs.componentDefaults.ports.admin.containerPort }}
 {{- $labels := include "auth-stack.labels" $ }}
 {{- $edge := dict "namespaceSelector" (dict "matchLabels" (dict "kubernetes.io/metadata.name" .ingressControllerNamespace)) }}
 {{- $frontend := dict "podSelector" (dict "matchLabels" (fromYaml (include "auth-stack.componentSelector" (dict "root" $ "name" "frontend")))) }}
 {{- $backend := dict "podSelector" (dict "matchLabels" (fromYaml (include "auth-stack.componentSelector" (dict "root" $ "name" "backend")))) }}
+{{- $modules := dict "podSelector" (dict "matchLabels" (fromYaml (include "auth-stack.componentSelector" (dict "root" $ "name" "modules")))) }}
 {{- $seed := dict "podSelector" (dict "matchLabels" (dict "app.kubernetes.io/name" "db-seed" "app.kubernetes.io/instance" $.Release.Name)) }}
+{{- $mysqlSeed := dict "podSelector" (dict "matchLabels" (dict "app.kubernetes.io/name" "mysql-seed" "app.kubernetes.io/instance" $.Release.Name)) }}
 {{- $database := dict "ipBlock" (dict "cidr" .database.cidr) }}
+{{- $mysql := dict "ipBlock" (dict "cidr" .modulesDatabase.cidr) }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -96,6 +102,7 @@ spec:
   ingress:
     - from:
         - {{- toYaml $frontend | nindent 10 }}
+        - {{- toYaml $edge | nindent 10 }}
       ports:
         - protocol: TCP
           port: {{ $ports.backend }}
@@ -105,6 +112,36 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .database.port }}
+    - to:
+        - {{- toYaml $modules | nindent 10 }}
+      ports:
+        - protocol: TCP
+          port: {{ $ports.modules }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-modules
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  podSelector:
+    {{- toYaml $modules.podSelector | nindent 4 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - {{- toYaml $backend | nindent 10 }}
+      ports:
+        - protocol: TCP
+          port: {{ $ports.modules }}
+  egress:
+    - to:
+        - {{- toYaml $mysql | nindent 10 }}
+      ports:
+        - protocol: TCP
+          port: {{ .modulesDatabase.port }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -123,6 +160,24 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .database.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-mysql-seed
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  podSelector:
+    {{- toYaml $mysqlSeed.podSelector | nindent 4 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - {{- toYaml $mysql | nindent 10 }}
+      ports:
+        - protocol: TCP
+          port: {{ .modulesDatabase.port }}
 {{- if .acmeSolver.enabled }}
 ---
 apiVersion: networking.k8s.io/v1

@@ -108,3 +108,18 @@ variable "database_trusted_ips" {
   type        = list(string)
   default     = []
 }
+
+# Managed MySQL of the module service (database.tf, Aufgabe 6, Microservices):
+# same shape and size class as the PostgreSQL cluster, one database and one
+# login role per environment (modules_<name>).
+variable "mysql_version" {
+  description = "MySQL major version of the managed cluster (doctl databases options versions --engine mysql); the module service targets 8."
+  type        = string
+  default     = "8"
+}
+
+variable "mysql_size" {
+  description = "Size slug of the MySQL database node (doctl databases options slugs --engine mysql)."
+  type        = string
+  default     = "db-s-1vcpu-1gb"
+}

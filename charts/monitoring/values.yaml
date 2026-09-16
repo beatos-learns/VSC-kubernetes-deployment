@@ -200,11 +200,12 @@ kube-prometheus-stack:
             matchers:
               - alertname =~ "Watchdog|InfoInhibitor"
           # The environments' alerts (charts/auth-stack PrometheusRule: the
-          # backend, the frontend and the components' health checks): grouped
-          # per environment and severity, repeated hourly while firing.
+          # backend, the frontend, the module service and the components'
+          # health checks): grouped per environment and severity, repeated
+          # hourly while firing.
           - receiver: webhook
             matchers:
-              - service =~ "user-mgmt-service|auth-portal|auth-stack"
+              - service =~ "user-mgmt-service|auth-portal|module-service|auth-stack"
             group_by: [namespace, alertname, severity]
             group_wait: 30s
             repeat_interval: 1h
