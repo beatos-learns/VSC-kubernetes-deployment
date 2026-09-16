@@ -3,9 +3,43 @@
 # LF into CRLF, and a tool that writes CRLF is normalised back on commit.
 * text=auto eol=lf
 
+# Explicit for the types this repo holds, so a mis-detected file (a JSON
+# dashboard with long lines, a values file with a NUL in a string) is still
+# treated as text.
+*.yaml      text eol=lf
+*.yml       text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.tpl       text eol=lf
+*.tf        text eol=lf
+*.tfvars    text eol=lf
+*.hcl       text eol=lf
+*.lock      text eol=lf
+*.js        text eol=lf
+*.sh        text eol=lf
+*.ps1       text eol=lf
+*.psm1      text eol=lf
+*.psd1      text eol=lf
+.gitignore  text eol=lf
+.gitattributes text eol=lf
+
+# Patches must stay byte-exact: no normalisation, or `git apply` and the
+# kustomize patch loader see a different file than the one committed.
+*.patch     -text
+*.diff      -text
+
+# cmd.exe needs CRLF; these are the only files that may have it.
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
 # Never touch what is not text.
-*.tgz binary
-*.zip binary
-*.pdf binary
-*.png binary
-*.jpg binary
+*.tgz       binary
+*.zip       binary
+*.gz        binary
+*.pdf       binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.ico       binary
+*.woff      binary
+*.woff2     binary

@@ -129,7 +129,7 @@ kube-prometheus-stack:
       enableRemoteWriteReceiver: true
 
       # Nil selectors mean "only what this release rendered". The environments
-      # (charts/auth-stack/templates/, generic-stack PodMonitors) and the
+      # (charts/auth-stack/templates/podmonitor.yaml, one per component) and the
       # platform apps (ArgoCD, Traefik, cert-manager, Kyverno: their charts'
       # own ServiceMonitors) ship their monitors themselves, so discovery is
       # opened up - but only to the namespaces this platform owns.
@@ -199,11 +199,12 @@ kube-prometheus-stack:
           - receiver: "null"
             matchers:
               - alertname =~ "Watchdog|InfoInhibitor"
-          # The application's alerts (charts/auth-stack PrometheusRule):
-          # grouped per environment and severity, repeated hourly while firing.
+          # The environments' alerts (charts/auth-stack PrometheusRule: the
+          # backend, the frontend and the components' health checks): grouped
+          # per environment and severity, repeated hourly while firing.
           - receiver: webhook
             matchers:
-              - service = "user-mgmt-service"
+              - service =~ "user-mgmt-service|auth-portal|auth-stack"
             group_by: [namespace, alertname, severity]
             group_wait: 30s
             repeat_interval: 1h

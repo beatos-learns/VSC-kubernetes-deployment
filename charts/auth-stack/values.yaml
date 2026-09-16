@@ -40,11 +40,6 @@ generic-stack:
       secretEnv:
         SPRING_DATASOURCE_URL: db-url
         SPRING_DATASOURCE_USERNAME: db-user
-      # Publish the admin port (probes + /metrics) on the Service so the
-      # ServiceMonitor has an endpoint to scrape (templates/servicemonitor.yaml).
-      # Still not public: only the monitoring namespace may reach it.
-      service:
-        exposeAdmin: true
       minReadySeconds: 5
       resources:
         requests:
@@ -55,11 +50,6 @@ generic-stack:
           memory: 256Mi
 
     frontend:
-      # Scraped through the PodMonitor generic-stack renders: build_info and the
-      # server's health checks (health_check_up) on the admin port.
-      monitoring:
-        podMonitor:
-          enabled: true
       minReadySeconds: 5
       resources:
         requests:
@@ -226,10 +216,11 @@ dbSeed:
       COMMIT;
 
 # ---------------------------------------------------------------------------
-# Observability (Aufgabe 7): the ServiceMonitor points the cluster Prometheus
-# (ns monitoring, charts/monitoring) at the backend's admin port, the
-# PrometheusRule states what counts as broken. Both are deployment policy, so
-# the thresholds live here and in the overlays - not in the application chart.
+# Observability (Aufgabe 7): one PodMonitor per component points the cluster
+# Prometheus (ns monitoring, charts/monitoring) at the admin port every image
+# serves /metrics on (templates/podmonitor.yaml), the PrometheusRule states
+# what counts as broken. Both are deployment policy, so the scrape and the
+# thresholds live here and in the overlays - not in the application chart.
 # ---------------------------------------------------------------------------
 monitoring:
   enabled: true

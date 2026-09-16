@@ -31,7 +31,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: backend
-          image: ghcr.io/beatos-learns/vsc-kubernetes-containers/user-mgmt-service:0.0.2
+          image: ghcr.io/beatos-learns/vsc-kubernetes-containers/user-mgmt-service:0.0.3
           livenessProbe:
             httpGet:
               path: /livez
@@ -74,7 +74,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: backend
-          image: ghcr.io/beatos-learns/vsc-kubernetes-containers/user-mgmt-service:0.0.2
+          image: ghcr.io/beatos-learns/vsc-kubernetes-containers/user-mgmt-service:0.0.3
           resources:
             requests:
               cpu: 100m
@@ -111,7 +111,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: backend
-          image: ghcr.io/beatos-learns/vsc-kubernetes-containers/user-mgmt-service:0.0.2
+          image: ghcr.io/beatos-learns/vsc-kubernetes-containers/user-mgmt-service:0.0.3
           resources:
             requests:
               cpu: 100m

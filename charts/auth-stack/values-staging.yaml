@@ -9,15 +9,22 @@
 # ---------------------------------------------------------------------------
 
 generic-stack:
+  # Access logs on every HTTP component (the frontend has them on by default,
+  # the backend off): staging is where a promotion is verified, so every
+  # request leaves a line here. Written to ACCESS_LOG by the chart.
+  monitoring:
+    logging:
+      access: true
+
   components:
     # psql client of the schema seed Job (the component itself is disabled)
     db:
       image:
-        tag: "0.0.1" # promoted by CI
+        tag: "0.0.2" # promoted by CI
 
     backend:
       image:
-        tag: "0.0.2" # promoted by CI
+        tag: "0.0.3" # promoted by CI
       # same scaling mechanics as prod, smaller bounds
       hpa:
         enabled: true
@@ -30,7 +37,7 @@ generic-stack:
 
     frontend:
       image:
-        tag: "0.0.1" # promoted by CI
+        tag: "0.0.2" # promoted by CI
       pdb:
         enabled: true
         maxUnavailable: 1

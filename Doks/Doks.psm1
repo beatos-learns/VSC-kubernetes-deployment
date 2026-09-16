@@ -11,11 +11,14 @@
         Test-DoksSetup                     # doctl/kubectl/token/API all green?
 
     DAILY USE
+        New-DoksCluster | Sync-DoksTerraform | Bootstrap-DoksCluster; Connect-DoksPortForward
+                                           # the whole startup of a fresh cluster in one line
         New-DoksCluster                    # create (fra1, 2x s-2vcpu-4gb, autoscale 2-5), wait, connect
-        kubectl get nodes                  # this window now talks to the new cluster
+        Sync-DoksTerraform                 # terraform.tfvars = this cluster, state, init + apply (managed database)
+        Bootstrap-DoksCluster              # GitOps handover: secrets from terraform output, ArgoCD, root app, LB IP into the nip.io hosts
+        Connect-DoksPortForward            # ArgoCD, Grafana, Prometheus, Alertmanager on localhost, with credentials
         Get-DoksCluster                    # what is running (= what is billing) right now
         Use-DoksCluster k8s-test-fra1      # point this window at an existing cluster
-        Bootstrap-DoksCluster              # GitOps handover: secrets from terraform output, ArgoCD, root app (after terraform apply)
         Disconnect-DoksCluster             # forget the cluster in this window
         Remove-DoksCluster k8s-test-fra1   # delete cluster + its load balancers/volumes + local kubeconfig
 
@@ -1013,7 +1016,7 @@ function Get-DoksDatabaseOutputs {
         $code = $LASTEXITCODE
         $text = @($raw | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
         if ($code -ne 0 -or -not $text.Trim()) {
-            throw "terraform output $Name failed in $TerraformDir (exit code $code): $($text.Trim()) - run 'terraform apply' there first; the managed database and its credentials are Terraform outputs."
+            throw "terraform output $Name failed in $TerraformDir (exit code $code): $($text.Trim()) - run Sync-DoksTerraform (or 'terraform apply' there) first; the managed database and its credentials are Terraform outputs."
         }
         ConvertFrom-Json -InputObject $text
     }
@@ -1023,6 +1026,117 @@ function Get-DoksDatabaseOutputs {
         throw "Terraform outputs 'database' / 'database_credentials' are incomplete - has 'terraform apply' created the database cluster?"
     }
     [pscustomobject]@{ Info = $info; Credentials = $creds }
+}
+
+function Sync-DoksTerraform {
+    <#
+    .SYNOPSIS
+        Makes terraform/ describe a cluster and applies it: adopts the cluster,
+        creates (or keeps) the managed database.
+
+    .DESCRIPTION
+        The step between New-DoksCluster and Bootstrap-DoksCluster, as a command:
+          1. writes the cluster's id, name and Kubernetes version into
+             terraform/terraform.tfvars (commit that change with the next PR),
+          2. removes a previous cluster from the Terraform state, so the import
+             block adopts this one instead of replacing the old one,
+          3. 'terraform init' (first time) and 'terraform apply -auto-approve',
+             streamed to the console, with the module's DigitalOcean token
+             exported as DIGITALOCEAN_TOKEN for those processes only.
+        Idempotent: an up-to-date configuration applies as a no-op. The cluster
+        object is passed through, so the command sits in a pipeline:
+        New-DoksCluster | Sync-DoksTerraform | Bootstrap-DoksCluster
+
+    .PARAMETER Name
+        Cluster to describe (from the pipeline: New-DoksCluster / Get-DoksCluster
+        output). Omit to use the cluster this window is connected to.
+
+    .PARAMETER TerraformDir
+        Folder of the Terraform configuration. Default: <repo>/terraform.
+
+    .EXAMPLE
+        New-DoksCluster | Sync-DoksTerraform | Bootstrap-DoksCluster; Connect-DoksPortForward
+        The whole startup of a fresh cluster in one line.
+
+    .EXAMPLE
+        Sync-DoksTerraform k8s-test-fra1 -WhatIf
+        Shows what would change (tfvars, state, apply) without doing it.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType('Doks.Cluster')]
+    param(
+        [Parameter(Position = 0, ValueFromPipelineByPropertyName)]
+        [string]$Name,
+        [string]$TerraformDir
+    )
+    process {
+        Assert-DoksAuth
+        if (-not $TerraformDir) { $TerraformDir = Join-Path -Path (Split-Path -Path $PSScriptRoot -Parent) -ChildPath 'terraform' }
+        $TerraformDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($TerraformDir)
+        if (-not $Name) {
+            if (-not $env:KUBECONFIG) { throw 'No cluster given and this window is not connected - pass a name or run Use-DoksCluster first.' }
+            $context = @(Invoke-Kubectl -Arguments @('config', 'current-context')) -join ''
+            if ($context -match '^do-[a-z0-9]+-(.+)$') { $Name = $Matches[1] } else { throw "Cannot derive the cluster name from kubectl context '$context'; pass -Name." }
+        }
+        $cluster = Find-DoksCluster -Name $Name
+        if (-not $cluster) { throw "No cluster named '$Name' in this DigitalOcean account." }
+        $exe = Get-DoksTool -Name terraform
+        $tfvars = Join-Path -Path $TerraformDir -ChildPath 'terraform.tfvars'
+        if (-not (Test-Path -LiteralPath $tfvars -PathType Leaf)) { throw "No terraform.tfvars in $TerraformDir." }
+        Write-Host "Terraform for cluster $($cluster.Name) ($($cluster.Id), $($cluster.Version)) in $TerraformDir" -ForegroundColor Cyan
+
+        # 1. terraform.tfvars = this cluster
+        $content = [System.IO.File]::ReadAllText($tfvars)
+        $updated = $content
+        foreach ($pair in @(@('cluster_id', $cluster.Id), @('cluster_name', $cluster.Name), @('kubernetes_version', $cluster.Version))) {
+            $key, $value = $pair
+            $pattern = "(?m)^(\s*$key\s*=\s*)""[^""]*"""
+            if ($updated -notmatch $pattern) { throw "terraform.tfvars has no '$key' line to update." }
+            $updated = [regex]::Replace($updated, $pattern, ('${1}"' + $value + '"'))
+        }
+        if ($updated -ne $content) {
+            if ($PSCmdlet.ShouldProcess($tfvars, "Name cluster $($cluster.Name)")) {
+                [System.IO.File]::WriteAllText($tfvars, $updated)
+                Write-Host "  terraform.tfvars updated - commit it with the next PR." -ForegroundColor Green
+            }
+        }
+        else {
+            Write-Host '  terraform.tfvars already names this cluster.'
+        }
+
+        # 2./3. state + apply, token scoped to these processes
+        $token = $script:ApiToken
+        if (-not $token) { $stored = Read-DoksStoredToken; if ($stored) { $token = $stored.Token } }
+        if (-not $token -and -not $env:DIGITALOCEAN_TOKEN) { throw 'No DigitalOcean API token for Terraform: Set-DoksToken first, or export DIGITALOCEAN_TOKEN.' }
+        $previous = $env:DIGITALOCEAN_TOKEN
+        if ($token) { $env:DIGITALOCEAN_TOKEN = $token }
+        try {
+            $ErrorActionPreference = 'Continue'
+            if (-not (Test-Path -LiteralPath (Join-Path -Path $TerraformDir -ChildPath '.terraform') -PathType Container)) {
+                Write-Host '> terraform init' -ForegroundColor DarkGray
+                & $exe "-chdir=$TerraformDir" init -input=false | Out-Host
+                if ($LASTEXITCODE -ne 0) { throw "terraform init failed (exit code $LASTEXITCODE)." }
+            }
+            $shown = @(& $exe "-chdir=$TerraformDir" state show -no-color digitalocean_kubernetes_cluster.this 2>&1 | ForEach-Object { [string]$_ })
+            if ($LASTEXITCODE -eq 0 -and (($shown -join "`n") -notmatch [regex]::Escape($cluster.Id))) {
+                if ($PSCmdlet.ShouldProcess('digitalocean_kubernetes_cluster.this', 'Remove the previous cluster from the Terraform state')) {
+                    Write-Host '> terraform state rm digitalocean_kubernetes_cluster.this  (a previous cluster; the import block adopts this one)' -ForegroundColor DarkGray
+                    & $exe "-chdir=$TerraformDir" state rm digitalocean_kubernetes_cluster.this | Out-Host
+                    if ($LASTEXITCODE -ne 0) { throw "terraform state rm failed (exit code $LASTEXITCODE)." }
+                }
+            }
+            if ($PSCmdlet.ShouldProcess($TerraformDir, 'terraform apply -auto-approve (adopt the cluster, create or keep the managed database)')) {
+                Write-Host '> terraform apply -auto-approve  (a new managed database takes about 5 minutes)' -ForegroundColor DarkGray
+                & $exe "-chdir=$TerraformDir" apply -input=false -auto-approve | Out-Host
+                if ($LASTEXITCODE -ne 0) { throw "terraform apply failed (exit code $LASTEXITCODE)." }
+                Write-Host "Terraform applied: cluster adopted, managed database ready." -ForegroundColor Green
+            }
+        }
+        finally {
+            if ($null -eq $previous) { Remove-Item -Path Env:DIGITALOCEAN_TOKEN -ErrorAction SilentlyContinue } else { $env:DIGITALOCEAN_TOKEN = $previous }
+        }
+        $cluster
+    }
 }
 
 function Initialize-DoksCluster {
@@ -1036,25 +1150,32 @@ function Initialize-DoksCluster {
         deploys via kubectl/helm from then on.
 
         Steps (in order):
-          1. Connect   - point this window at the cluster (-ClusterName), verify access.
+          1. Connect   - point this window at the cluster (-ClusterName), verify access;
+                         read the managed database from the Terraform outputs
+                         (Sync-DoksTerraform must have applied for this cluster).
           2. Secrets   - per environment namespace: create the namespace, an
                          'auth-stack-secrets' Secret (the managed database's endpoint and
                          credentials from the Terraform outputs + a random jwt-secret),
                          and optionally a GHCR image pull Secret (-GhcrUsername/-GhcrToken).
                          Then the monitoring namespace with Grafana's admin Secret
                          (random password) and the Alertmanager notification channel
-                         (-AlertWebhookUrl).
+                         (-AlertWebhookUrl, or a webhook.site inbox created on the spot
+                         and opened in the browser when none is given).
           3. ArgoCD    - 'helm upgrade --install' (pinned chart version) from bootstrap/argocd-values.yaml
                          into the 'argocd' namespace.
           4. Root app  - 'kubectl apply' argocd/root.yaml; ArgoCD
                          takes over from here (app-of-apps).
-          5. Handover  - print how to watch convergence, open the dashboard, and
-                         find the load balancer IP for DNS.
+          5. Hosts     - wait for the Traefik load balancer IP and write it into
+                         the nip.io hosts of both environments and the load test
+                         (Sync-DoksHostname; -NoHostUpdate skips it).
+          6. Handover  - print what to commit, how to watch convergence, the
+                         port-forward command, the environment URLs and where the
+                         alerts are delivered.
 
         The command is idempotent and safe to re-run: existing Secrets are NEVER
         touched, ArgoCD upgrades in place, and the root application is applied
-        declaratively. 'terraform apply' must have run before: the database
-        outputs are read from -TerraformDir.
+        declaratively. The whole startup of a fresh cluster is one line:
+        New-DoksCluster | Sync-DoksTerraform | Bootstrap-DoksCluster; Connect-DoksPortForward
 
     .PARAMETER ClusterName
         Cluster to bootstrap. Connects this window to it first (Use-DoksCluster).
@@ -1067,6 +1188,13 @@ function Initialize-DoksCluster {
     .PARAMETER SecretName
         Name of the per-namespace application Secret the chart references via
         'existingSecret'. Default: auth-stack-secrets.
+
+    .PARAMETER NoHostUpdate
+        Skip step 5 (the nip.io hosts keep the previous cluster's IP until
+        Sync-DoksHostname runs).
+
+    .PARAMETER HostTimeoutSeconds
+        How long step 5 waits for the load balancer IP. Default: 900.
 
     .PARAMETER TerraformDir
         Folder of the Terraform configuration whose outputs 'database' and
@@ -1092,11 +1220,19 @@ function Initialize-DoksCluster {
 
     .PARAMETER AlertWebhookUrl
         Notification channel for Alertmanager: any endpoint that accepts its JSON
-        payload (chat bridge, automation platform, https://webhook.site/<id> for a
-        demonstration). Stored in the 'alertmanager-webhook' Secret and read
-        through 'url_file', so it never reaches git. Without it a non-resolving
-        placeholder is created: Alertmanager starts and alerts fire visibly, but
-        nothing is delivered until the Secret is replaced.
+        payload (chat bridge, automation platform, https://webhook.site/<id>).
+        Stored in the 'alertmanager-webhook' Secret and read through 'url_file',
+        so it never reaches git. Without it a fresh webhook.site inbox is created
+        through its public API (no account), stored as the channel, opened in the
+        browser, and both URLs are printed in the handover so the inbox can be
+        found again. The inbox is public to anyone holding the URL and expires
+        after seven days without traffic: a demonstration channel, not an
+        operations one.
+
+    .PARAMETER NoAlertInbox
+        Do not create a webhook.site inbox when -AlertWebhookUrl is omitted; the
+        Secret then holds a non-resolving placeholder. Alertmanager starts and
+        alerts fire visibly, but nothing is delivered until the Secret is replaced.
 
     .PARAMETER RepoRoot
         Repository root containing bootstrap/argocd-values.yaml and
@@ -1141,9 +1277,12 @@ function Initialize-DoksCluster {
         [string]$PullSecretName = 'ghcr-pull',
         [string]$MonitoringNamespace = 'monitoring',
         [string]$AlertWebhookUrl,
+        [switch]$NoAlertInbox,
         [string]$RepoRoot,
         [string]$ArgoCdChartVersion,
-        [string]$TerraformDir
+        [string]$TerraformDir,
+        [switch]$NoHostUpdate,
+        [ValidateRange(0, 7200)][int]$HostTimeoutSeconds = 900
     )
 
     if (-not $RepoRoot) { $RepoRoot = Split-Path -Path $PSScriptRoot -Parent }
@@ -1278,11 +1417,24 @@ stringData:
         Write-Host '  Secret grafana-admin created (random password).' -ForegroundColor Green
     }
 
+    $webhookPlaceholder = 'https://alertmanager-webhook-not-configured.invalid/'
+    $webhookUrl = $null
     if (Test-DoksKubectlResource -Kind secret -Name 'alertmanager-webhook' -Namespace $MonitoringNamespace) {
         Write-Host '  Secret alertmanager-webhook exists - left untouched.'
+        try {
+            $encoded = Invoke-Kubectl -Arguments @('-n', $MonitoringNamespace, 'get', 'secret', 'alertmanager-webhook', '-o', 'jsonpath={.data.webhook-url}')
+            if ($encoded) { $webhookUrl = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($encoded -join '').Trim())) }
+        }
+        catch { }
     }
     else {
-        $webhookUrl = if ($AlertWebhookUrl) { $AlertWebhookUrl } else { 'https://alertmanager-webhook-not-configured.invalid/' }
+        if ($AlertWebhookUrl) {
+            $webhookUrl = $AlertWebhookUrl
+        }
+        elseif (-not $NoAlertInbox) {
+            $webhookUrl = New-DoksAlertInbox
+        }
+        if (-not $webhookUrl) { $webhookUrl = $webhookPlaceholder }
         $manifest = @"
 apiVersion: v1
 kind: Secret
@@ -1294,11 +1446,18 @@ stringData:
   webhook-url: "$webhookUrl"
 "@
         Invoke-KubectlManifest -Manifest $manifest -Arguments @('create', '-f', '-')
-        if ($AlertWebhookUrl) {
-            Write-Host '  Secret alertmanager-webhook created (notification channel configured).' -ForegroundColor Green
+        if ($webhookUrl -eq $webhookPlaceholder) {
+            Write-Warning 'alertmanager-webhook holds a placeholder that never delivers. Replace the Secret (bootstrap/README.md step 2) to receive notifications.'
         }
         else {
-            Write-Warning 'No -AlertWebhookUrl given: alertmanager-webhook holds a placeholder that never delivers. Replace the Secret (bootstrap/README.md step 2) to receive notifications.'
+            Write-Host '  Secret alertmanager-webhook created (notification channel configured).' -ForegroundColor Green
+        }
+    }
+    $alertInboxView = $null
+    if ($webhookUrl -match '^https://webhook\.site/([0-9a-f-]{36})$') {
+        $alertInboxView = "https://webhook.site/#!/view/$($Matches[1])"
+        if (-not $AlertWebhookUrl) {
+            try { Start-Process $alertInboxView } catch { Write-Host "  Open the alert inbox yourself: $alertInboxView" }
         }
     }
 
@@ -1323,17 +1482,293 @@ stringData:
     Invoke-Kubectl -Arguments @('apply', '-f', $rootApp) | Out-Null
     Write-Host 'Root application applied - ArgoCD now syncs argocd/ from git.' -ForegroundColor Green
 
-    # --- 5. Handover ------------------------------------------------------
+    # --- 5. Cluster facts into the repo: the nip.io hosts -----------------
+    $lbIp = $null
+    if ($NoHostUpdate) {
+        Write-Host 'Host names not updated (-NoHostUpdate): run Sync-DoksHostname once the load balancer has an IP.' -ForegroundColor DarkGray
+    }
+    else {
+        try { $lbIp = Sync-DoksHostname -RepoRoot $RepoRoot -TimeoutSeconds $HostTimeoutSeconds }
+        catch { Write-Warning $_.Exception.Message }
+    }
+
+    # --- 6. Handover ------------------------------------------------------
     Write-Host ''
     Write-Host 'Bootstrap done. From here the cluster converges on git.' -ForegroundColor Green
+    Write-Host '  Commit and push:     terraform/terraform.tfvars, charts/auth-stack/values-staging.yaml, values-prod.yaml, loadtest/job.yaml (the cluster facts this startup wrote; git status shows which changed)' -ForegroundColor Yellow
     Write-Host '  Watch convergence:   kubectl -n argocd get applications -w'
-    Write-Host '  Dashboard password:  kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | %{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) }'
-    Write-Host '  Dashboard:           kubectl -n argocd port-forward svc/argocd-server 8080:80   ->  http://localhost:8080 (user: admin)'
-    Write-Host '  Rotate admin pw:     argocd login localhost:8080 --plaintext; argocd account update-password; kubectl -n argocd delete secret argocd-initial-admin-secret'
-    Write-Host '  Load balancer IP:    kubectl -n traefik get svc infra-traefik -o jsonpath="{.status.loadBalancer.ingress[0].ip}"  (point DNS / nip.io hosts at it)'
-    Write-Host '  Grafana password:    kubectl -n monitoring get secret grafana-admin -o jsonpath="{.data.admin-password}" | %{ [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) }'
-    Write-Host '  Grafana:             kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80   ->  http://localhost:3000 (user: admin)'
-    Write-Host '  Prometheus:          kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090'
+    Write-Host '  All UIs at once:     Connect-DoksPortForward   ->  ArgoCD :8080, Grafana :3000, Prometheus :9090, Alertmanager :9093 on localhost, with user + password per UI; lost forwards reconnect, Ctrl+C ends them'
+    Write-Host '  Rotate ArgoCD pw:    argocd login localhost:8080 --plaintext; argocd account update-password; kubectl -n argocd delete secret argocd-initial-admin-secret'
+    if ($lbIp) {
+        Write-Host "  Environments:        https://auth-staging.$($lbIp -replace '\.', '-').nip.io   https://auth-prod.$($lbIp -replace '\.', '-').nip.io   (after the push; Let's Encrypt staging certificate, not browser-trusted)"
+    }
+    else {
+        Write-Host '  Load balancer IP:    kubectl -n traefik get svc infra-traefik -o jsonpath="{.status.loadBalancer.ingress[0].ip}"  then Sync-DoksHostname writes it into the nip.io hosts'
+    }
+    if ($webhookUrl -eq $webhookPlaceholder) {
+        Write-Host '  Alert channel:       placeholder - nothing is delivered until the alertmanager-webhook Secret is replaced' -ForegroundColor Yellow
+    }
+    else {
+        Write-Host "  Alert channel:       $webhookUrl"
+        if ($alertInboxView) {
+            Write-Host "  Alert inbox (view):  $alertInboxView   (webhook.site; public to anyone with the link, expires 7 days after the last request)"
+        }
+    }
+}
+
+function New-DoksAlertInbox {
+    <#
+    .SYNOPSIS
+        Creates a throwaway webhook.site inbox and returns its endpoint URL.
+    .DESCRIPTION
+        POST https://webhook.site/token allocates an inbox without an account. The
+        endpoint https://webhook.site/<uuid> accepts any request and shows it live
+        at https://webhook.site/#!/view/<uuid>. Returns $null (with a warning) when
+        the service is unreachable, so the caller can fall back to a placeholder.
+    #>
+    [CmdletBinding()]
+    param()
+    try {
+        $token = Invoke-RestMethod -Method Post -Uri 'https://webhook.site/token' -Headers @{ Accept = 'application/json' } -TimeoutSec 20
+        if (-not $token.uuid) { throw 'response carries no uuid' }
+        $url = "https://webhook.site/$($token.uuid)"
+        Write-Host "  webhook.site inbox created as the alert channel: $url" -ForegroundColor Green
+        return $url
+    }
+    catch {
+        Write-Warning "Could not create a webhook.site inbox ($($_.Exception.Message)); the alert channel stays a placeholder."
+        return $null
+    }
+}
+
+function Sync-DoksHostname {
+    <#
+    .SYNOPSIS
+        Writes the cluster's load balancer IP into the repo's nip.io host names.
+
+    .DESCRIPTION
+        The environments are reached through nip.io names that embed the Traefik
+        load balancer IP (auth-staging.<a-b-c-d>.nip.io, auth-prod...), and a new
+        cluster gets a new IP. This command waits until the ingress controller's
+        LoadBalancer Service has one (ArgoCD deploys Traefik after the bootstrap;
+        DigitalOcean needs a few minutes), then rewrites every nip.io host in
+        charts/auth-stack/values-staging.yaml, values-prod.yaml and
+        loadtest/job.yaml to that IP. Commit and push the result: ArgoCD then
+        applies the Ingress hosts and cert-manager issues the certificates.
+        Bootstrap-DoksCluster runs this as its last step; standalone it repeats
+        the update for a cluster that already exists. Returns the IP.
+
+    .PARAMETER RepoRoot
+        Repository root. Default: the folder above this module.
+
+    .PARAMETER TimeoutSeconds
+        How long to wait for the load balancer IP. Default: 900.
+
+    .EXAMPLE
+        Sync-DoksHostname
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([string])]
+    param(
+        [string]$RepoRoot,
+        [ValidateRange(0, 7200)][int]$TimeoutSeconds = 900,
+        [string]$IngressNamespace = 'traefik',
+        [string]$ServiceName = 'infra-traefik'
+    )
+    if (-not $env:KUBECONFIG) { throw 'No KUBECONFIG in this window - run Use-DoksCluster <name> first.' }
+    if (-not $RepoRoot) { $RepoRoot = Split-Path -Path $PSScriptRoot -Parent }
+    $RepoRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RepoRoot)
+    $files = @('charts/auth-stack/values-staging.yaml', 'charts/auth-stack/values-prod.yaml', 'loadtest/job.yaml') |
+        ForEach-Object { Join-Path -Path $RepoRoot -ChildPath $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+    if ($files.Count -eq 0) { throw "No values-*.yaml / loadtest/job.yaml under $RepoRoot - pass -RepoRoot pointing at the ops repository." }
+
+    Write-Host "Waiting for the load balancer IP of $IngressNamespace/$ServiceName (ArgoCD deploys Traefik; DigitalOcean provisions the balancer) ..." -ForegroundColor Cyan
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $ip = $null
+    do {
+        try {
+            $ip = (@(Invoke-Kubectl -Arguments @('-n', $IngressNamespace, 'get', 'svc', $ServiceName, '-o', 'jsonpath={.status.loadBalancer.ingress[0].ip}')) -join '').Trim()
+        }
+        catch { $ip = $null }
+        if ($ip -match '^\d{1,3}(\.\d{1,3}){3}$') { break }
+        $ip = $null
+        if ($watch.Elapsed.TotalSeconds -ge $TimeoutSeconds) { break }
+        Start-Sleep -Seconds 10
+    } while ($true)
+    if (-not $ip) { throw "No load balancer IP after $TimeoutSeconds s. Check 'kubectl -n argocd get applications' (infra-traefik must be Synced/Healthy) and re-run Sync-DoksHostname." }
+    Write-Host "Load balancer IP: $ip (after $([int]$watch.Elapsed.TotalSeconds) s)" -ForegroundColor Green
+
+    $dashed = $ip -replace '\.', '-'
+    $pattern = '(?<=[.-])\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}(?=\.nip\.io)'
+    $changed = @()
+    foreach ($file in $files) {
+        $content = [System.IO.File]::ReadAllText($file)
+        $updated = [regex]::Replace($content, $pattern, $dashed)
+        $relative = $file.Substring($RepoRoot.Length).TrimStart('\', '/')
+        if ($updated -eq $content) {
+            Write-Host "  $relative already uses $dashed.nip.io."
+            continue
+        }
+        if ($PSCmdlet.ShouldProcess($relative, "nip.io hosts -> $dashed.nip.io")) {
+            [System.IO.File]::WriteAllText($file, $updated)
+            $hosts = @([regex]::Matches($updated, '[a-z0-9-]+\.' + [regex]::Escape($dashed) + '\.nip\.io') | ForEach-Object { $_.Value } | Sort-Object -Unique)
+            Write-Host "  $relative -> $($hosts -join ', ')" -ForegroundColor Green
+            $changed += $relative
+        }
+    }
+    if ($changed.Count -gt 0) {
+        Write-Host 'Commit and push these files: ArgoCD applies the Ingress hosts and cert-manager issues the certificates for them.' -ForegroundColor Yellow
+    }
+    $ip
+}
+
+# Every UI of interest inside the cluster, forwarded to localhost by
+# Connect-DoksPortForward. Names and ports match bootstrap/README.md.
+$script:PortForwardTargets = @(
+    @{ Name = 'ArgoCD';       Namespace = 'argocd';     Target = 'svc/argocd-server';                          Ports = '8080:80';   Url = 'http://localhost:8080'; Note = 'user: admin' }
+    @{ Name = 'Grafana';      Namespace = 'monitoring'; Target = 'svc/monitoring-grafana';                     Ports = '3000:80';   Url = 'http://localhost:3000'; Note = 'user: admin' }
+    @{ Name = 'Prometheus';   Namespace = 'monitoring'; Target = 'svc/monitoring-kube-prometheus-prometheus';  Ports = '9090:9090'; Url = 'http://localhost:9090'; Note = 'targets, alerts, rules' }
+    @{ Name = 'Alertmanager'; Namespace = 'monitoring'; Target = 'svc/monitoring-kube-prometheus-alertmanager'; Ports = '9093:9093'; Url = 'http://localhost:9093'; Note = 'grouped + delivered alerts' }
+)
+$script:PortForwards = @()
+
+function Connect-DoksPortForward {
+    <#
+    .SYNOPSIS
+        Forwards every UI of interest in the cluster to localhost with one command.
+
+    .DESCRIPTION
+        Starts one 'kubectl port-forward' per target (ArgoCD 8080, Grafana 3000,
+        Prometheus 9090, Alertmanager 9093) against the cluster this window points
+        at ($env:KUBECONFIG) and prints one line per UI: local URL, user name and
+        password (read from the argocd-initial-admin-secret and grafana-admin
+        Secrets; Prometheus and Alertmanager have no login). The forwards stay
+        attached to this window: a lost forward (a pod restart ends it) is
+        reported and retried every 10 seconds until it is back, which is reported
+        too; Ctrl+C ends all of them. With -Background the forwards keep running
+        after the command returns without reconnects; Disconnect-DoksPortForward
+        ends them. Each forward's output goes to a log under the temp folder.
+
+    .PARAMETER Background
+        Return immediately and leave the forwards running without reconnects
+        (Disconnect-DoksPortForward stops them).
+
+    .EXAMPLE
+        Connect-DoksPortForward
+        Forwards everything; Ctrl+C ends the forwards.
+
+    .EXAMPLE
+        Connect-DoksPortForward -Background; Disconnect-DoksPortForward
+    #>
+    [CmdletBinding()]
+    param([switch]$Background)
+
+    if (-not $env:KUBECONFIG) { throw 'No KUBECONFIG in this window - run Use-DoksCluster <name> first.' }
+    Disconnect-DoksPortForward -Quiet
+    $kubectl = Get-DoksTool -Name kubectl
+    $logDir = Join-Path ([IO.Path]::GetTempPath()) 'doks-port-forward'
+    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+
+    $secret = {
+        param([string]$Namespace, [string]$Name, [string]$Key)
+        try {
+            $encoded = Invoke-Kubectl -Arguments @('-n', $Namespace, 'get', 'secret', $Name, '-o', "jsonpath={.data.$Key}")
+            if ($encoded) { return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($encoded -join '').Trim())) }
+        }
+        catch { }
+        $null
+    }
+    $start = {
+        param($Forward)
+        $Forward.Process = Start-Process -FilePath $kubectl -PassThru -NoNewWindow `
+            -ArgumentList @('-n', $Forward.Namespace, 'port-forward', $Forward.Target, $Forward.Ports) `
+            -RedirectStandardOutput $Forward.Log -RedirectStandardError $Forward.Error
+    }
+
+    foreach ($t in $script:PortForwardTargets) {
+        $user = $null; $password = $null
+        switch ($t.Name) {
+            'ArgoCD' {
+                $user = 'admin'
+                $password = & $secret 'argocd' 'argocd-initial-admin-secret' 'password'
+                if (-not $password) { $password = '(rotated: argocd-initial-admin-secret is deleted)' }
+            }
+            'Grafana' {
+                $user = & $secret 'monitoring' 'grafana-admin' 'admin-user'
+                $password = & $secret 'monitoring' 'grafana-admin' 'admin-password'
+                if (-not $user) { $user = 'admin' }
+                if (-not $password) { $password = '(Secret grafana-admin not found)' }
+            }
+        }
+        $f = [pscustomobject]@{
+            Name = $t.Name; Namespace = $t.Namespace; Target = $t.Target; Ports = $t.Ports; Url = $t.Url; Note = $t.Note
+            User = $user; Password = $password; Process = $null; Down = $false; NextAttempt = [datetime]::MinValue
+            Log = (Join-Path $logDir "$($t.Name.ToLower()).log"); Error = (Join-Path $logDir "$($t.Name.ToLower()).err")
+        }
+        & $start $f
+        $script:PortForwards += $f
+    }
+    Start-Sleep -Milliseconds 1500
+    Write-Host 'Port-forwards (this window, cluster from KUBECONFIG):' -ForegroundColor Cyan
+    foreach ($f in $script:PortForwards) {
+        $up = -not $f.Process.HasExited
+        $login = if ($f.User) { "user: $($f.User)   password: $($f.Password)" } else { 'user: -   password: -   (no login)' }
+        Write-Host ("  {0,-13} {1,-23} {2}" -f $f.Name, $f.Url, $login) -ForegroundColor $(if ($up) { 'Green' } else { 'Red' })
+        if (-not $up) {
+            $f.Down = $true; $f.NextAttempt = [datetime]::UtcNow.AddSeconds(10)
+            Get-Content -Path $f.Error -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+        }
+    }
+    if ($Background) {
+        Write-Host 'Running in the background (no reconnects) - Disconnect-DoksPortForward ends them.' -ForegroundColor DarkGray
+        return
+    }
+    Write-Host 'Lost forwards are retried every 10 s. Ctrl+C ends all forwards.' -ForegroundColor DarkGray
+    try {
+        while ($true) {
+            Start-Sleep -Seconds 2
+            $now = [datetime]::UtcNow
+            foreach ($f in $script:PortForwards) {
+                if (-not $f.Down -and $f.Process.HasExited) {
+                    $f.Down = $true
+                    $f.NextAttempt = $now.AddSeconds(10)
+                    $reason = @(Get-Content -Path $f.Error -ErrorAction SilentlyContinue | Where-Object { $_.Trim() } | Select-Object -Last 1) -join ''
+                    Write-Host ("{0:HH:mm:ss}  {1}: connection lost{2} - retrying every 10 s" -f [datetime]::Now, $f.Name, $(if ($reason) { " ($reason)" } else { '' })) -ForegroundColor Yellow
+                }
+                elseif ($f.Down -and $now -ge $f.NextAttempt) {
+                    & $start $f
+                    Start-Sleep -Milliseconds 1500
+                    if ($f.Process.HasExited) {
+                        $f.NextAttempt = [datetime]::UtcNow.AddSeconds(10)
+                    }
+                    else {
+                        $f.Down = $false
+                        Write-Host ("{0:HH:mm:ss}  {1}: reconnected - {2}" -f [datetime]::Now, $f.Name, $f.Url) -ForegroundColor Green
+                    }
+                }
+            }
+        }
+    }
+    finally {
+        Disconnect-DoksPortForward
+    }
+}
+
+function Disconnect-DoksPortForward {
+    <#
+    .SYNOPSIS
+        Ends the port-forwards started by Connect-DoksPortForward.
+    #>
+    [CmdletBinding()]
+    param([switch]$Quiet)
+    $stopped = 0
+    foreach ($f in $script:PortForwards) {
+        if (-not $f.Process.HasExited) {
+            try { Stop-Process -Id $f.Process.Id -Force -ErrorAction Stop; $stopped++ } catch { }
+        }
+    }
+    $script:PortForwards = @()
+    if (-not $Quiet) { Write-Host "Port-forwards ended ($stopped stopped)." -ForegroundColor DarkGray }
 }
 
 function Test-DoksSetup {
@@ -1418,5 +1853,6 @@ Export-ModuleMember -Function @(
     'New-DoksCluster', 'Remove-DoksCluster', 'Get-DoksCluster', 'Use-DoksCluster', 'Disconnect-DoksCluster',
     'Wait-DoksNodeReady', 'Get-DoksOption', 'Initialize-DoksCluster',
     'Set-DoksToken', 'Remove-DoksToken', 'Connect-DoksAccount', 'Disconnect-DoksAccount', 'Get-DoksAccount',
-    'Get-DoksDefault', 'Set-DoksDefault', 'Test-DoksSetup'
+    'Get-DoksDefault', 'Set-DoksDefault', 'Test-DoksSetup',
+    'Sync-DoksTerraform', 'Sync-DoksHostname', 'Connect-DoksPortForward', 'Disconnect-DoksPortForward'
 ) -Alias @('Bootstrap-DoksCluster')

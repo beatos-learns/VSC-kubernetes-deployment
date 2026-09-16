@@ -1,7 +1,7 @@
 {
-  "uid": "vsc-user-mgmt-service",
-  "title": "user-mgmt-service",
-  "description": "Application metrics of the Spring Boot user_mgmt_service, scraped through the backend PodMonitor in charts/auth-stack: routes (rate, latency, errors, in-flight, bytes), the database hop (HikariCP pool, repository calls), the runtime (JVM, threads, GC, log levels), the image's own health checks - plus the container resources of the same pods.",
+  "uid": "vsc-auth-portal",
+  "title": "auth-portal",
+  "description": "Metrics of the frontend (Go server serving the exported Next.js bundle and proxying /api to the backend), scraped through the frontend PodMonitor in charts/auth-stack: routes, the frontend -> backend hop as the client sees it, connections and bytes, the Go runtime, the image's own health checks, and the container resources of the same pods.",
   "tags": [
     "auth-stack",
     "application"
@@ -62,7 +62,7 @@
       "id": 1,
       "type": "stat",
       "title": "Request rate",
-      "description": "Requests per second served by the API, all endpoints.",
+      "description": "Requests per second served by the frontend, pages and /api routes together.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -113,7 +113,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
+          "expr": "sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\"}[5m]))",
           "legendFormat": "requests/s",
           "range": true,
           "refId": "A"
@@ -124,7 +124,7 @@
       "id": 2,
       "type": "stat",
       "title": "Error rate (5xx)",
-      "description": "Share of responses with a 5xx status - the SLO-relevant error rate.",
+      "description": "Share of frontend responses with a 5xx status.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -184,7 +184,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "100 * sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", status=~\"5..\"}[5m])) / sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
+          "expr": "100 * sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\", status=~\"5..\"}[5m])) / sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\"}[5m]))",
           "legendFormat": "5xx",
           "range": true,
           "refId": "A"
@@ -195,7 +195,7 @@
       "id": 3,
       "type": "stat",
       "title": "Response time (p95)",
-      "description": "95th percentile of the server-side request duration over 5 minutes.",
+      "description": "95th percentile of the frontend's server-side request duration over 5 minutes (proxied calls include the backend hop).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -255,7 +255,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"backend\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"frontend\"}[5m])))",
           "legendFormat": "p95",
           "range": true,
           "refId": "A"
@@ -266,7 +266,7 @@
       "id": 4,
       "type": "stat",
       "title": "Instances up",
-      "description": "Backend pods currently answering the PodMonitor scrape on the admin port.",
+      "description": "Frontend pods currently answering the PodMonitor scrape on the admin port.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -321,7 +321,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(up{namespace=~\"$namespace\", job=\"backend\"})",
+          "expr": "sum(up{namespace=~\"$namespace\", job=\"frontend\"})",
           "legendFormat": "up",
           "range": true,
           "refId": "A"
@@ -332,7 +332,7 @@
       "id": 5,
       "type": "stat",
       "title": "Running version",
-      "description": "Image tag of the scraped pods (app.kubernetes.io/version, copied onto every series by the PodMonitor).",
+      "description": "Image tag of the scraped pods (app.kubernetes.io/version).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -383,7 +383,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "count by (app_kubernetes_io_version) (up{namespace=~\"$namespace\", job=\"backend\"})",
+          "expr": "count by (app_kubernetes_io_version) (up{namespace=~\"$namespace\", job=\"frontend\"})",
           "legendFormat": "{{app_kubernetes_io_version}}",
           "range": true,
           "refId": "A"
@@ -393,8 +393,8 @@
     {
       "id": 6,
       "type": "stat",
-      "title": "Waiting for a DB connection",
-      "description": "Threads queued for a HikariCP connection right now; anything above 0 for minutes means the pool or the managed database is the bottleneck.",
+      "title": "Backend hop failing",
+      "description": "Share of proxied backend calls that ended in a 5xx or a transport error (outcome UNKNOWN = the backend was not reachable).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -407,8 +407,9 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
-          "decimals": 0,
+          "unit": "percent",
+          "decimals": 2,
+          "min": 0,
           "color": {
             "mode": "thresholds"
           },
@@ -420,8 +421,12 @@
                 "value": null
               },
               {
-                "color": "red",
+                "color": "orange",
                 "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
               }
             ]
           }
@@ -430,7 +435,7 @@
       },
       "options": {
         "colorMode": "value",
-        "graphMode": "none",
+        "graphMode": "area",
         "justifyMode": "auto",
         "orientation": "auto",
         "reduceOptions": {
@@ -449,8 +454,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max(hikaricp_connections_pending{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "pending",
+          "expr": "100 * sum (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\", peer=\"backend\", outcome=~\"SERVER_ERROR|UNKNOWN\"}[5m])) / sum (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\", peer=\"backend\"}[5m]))",
+          "legendFormat": "failing",
           "range": true,
           "refId": "A"
         }
@@ -472,8 +477,8 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "Request rate by outcome",
-      "description": "Micrometer's outcome tag: SUCCESS, REDIRECTION, CLIENT_ERROR, SERVER_ERROR.",
+      "title": "Request rate by route",
+      "description": "Per route class of the Go server: pages (/, /login, /signup, /dashboard), the proxied /api routes, /static/** and UNKNOWN for anything outside the table.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -490,12 +495,9 @@
           "min": 0,
           "custom": {
             "drawStyle": "line",
-            "fillOpacity": 20,
+            "fillOpacity": 10,
             "lineWidth": 1,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "normal"
-            }
+            "showPoints": "never"
           }
         },
         "overrides": []
@@ -523,8 +525,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (outcome) (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
-          "legendFormat": "{{outcome}}",
+          "expr": "sum by (method, uri) (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\"}[5m]))",
+          "legendFormat": "{{method}} {{uri}}",
           "range": true,
           "refId": "A"
         }
@@ -533,8 +535,8 @@
     {
       "id": 9,
       "type": "timeseries",
-      "title": "Response time percentiles",
-      "description": "Quantiles computed from the http_server_requests histogram.",
+      "title": "Response time (p95) by route",
+      "description": "Static routes answer from disk; the /api routes carry the backend hop.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -581,43 +583,10 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"backend\"}[5m])))",
-          "legendFormat": "p50",
+          "expr": "histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"frontend\"}[5m])))",
+          "legendFormat": "{{uri}}",
           "range": true,
           "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.9, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"backend\"}[5m])))",
-          "legendFormat": "p90",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"backend\"}[5m])))",
-          "legendFormat": "p99",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum (rate(http_server_requests_seconds_sum{namespace=~\"$namespace\", job=\"backend\"}[5m])) / sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
-          "legendFormat": "average",
-          "range": true,
-          "refId": "D"
         }
       ]
     },
@@ -625,7 +594,7 @@
       "id": 10,
       "type": "timeseries",
       "title": "Error rate",
-      "description": "Server errors (5xx) and client errors (4xx) as a share of all responses. The PrometheusRule alerts on the 5xx series.",
+      "description": "Server errors (5xx) and client errors (4xx) as a share of all frontend responses.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -672,7 +641,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "100 * sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", status=~\"5..\"}[5m])) / sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
+          "expr": "100 * sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\", status=~\"5..\"}[5m])) / sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\"}[5m]))",
           "legendFormat": "5xx",
           "range": true,
           "refId": "A"
@@ -683,7 +652,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "100 * sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\", status=~\"4..\"}[5m])) / sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
+          "expr": "100 * sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\", status=~\"4..\"}[5m])) / sum (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\"}[5m]))",
           "legendFormat": "4xx",
           "range": true,
           "refId": "B"
@@ -693,8 +662,8 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "Request rate by endpoint",
-      "description": "Per URI template (path variables are collapsed, e.g. /users/{id}); NOT_FOUND, REDIRECTION and UNKNOWN are Micrometer's fallbacks for requests outside the route table.",
+      "title": "Requests in flight by route",
+      "description": "http_server_requests_active: what the frontend is handling right now.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -704,122 +673,6 @@
         "w": 12,
         "x": 12,
         "y": 13
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "lineWidth": 1,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "topk(10, sum by (method, uri) (rate(http_server_requests_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m])))",
-          "legendFormat": "{{method}} {{uri}}",
-          "range": true,
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 12,
-      "type": "timeseries",
-      "title": "Response time (p95) by endpoint",
-      "description": "Which endpoint is slow, not just that something is.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 21
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "lineWidth": 1,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, uri) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"backend\"}[5m])))",
-          "legendFormat": "{{uri}}",
-          "range": true,
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 13,
-      "type": "timeseries",
-      "title": "Requests in flight by endpoint",
-      "description": "http_server_requests_active: what is being handled right now; a route that keeps climbing is waiting on something (the pool, the database).",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 21
       },
       "fieldConfig": {
         "defaults": {
@@ -861,7 +714,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (method, uri) (http_server_requests_active{namespace=~\"$namespace\", job=\"backend\"})",
+          "expr": "sum by (method, uri) (http_server_requests_active{namespace=~\"$namespace\", job=\"frontend\"})",
           "legendFormat": "{{method}} {{uri}}",
           "range": true,
           "refId": "A"
@@ -869,23 +722,23 @@
       ]
     },
     {
-      "id": 14,
+      "id": 12,
       "type": "row",
-      "title": "Traffic",
+      "title": "Backend hop (frontend -> backend)",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 29
+        "y": 21
       },
       "panels": []
     },
     {
-      "id": 15,
+      "id": 13,
       "type": "timeseries",
-      "title": "Bytes by endpoint",
-      "description": "Request bodies received (in) and response bodies sent (out) per route.",
+      "title": "Proxied calls by backend route",
+      "description": "The frontend's calls to user-mgmt-service, labelled with the backend's own route template (peer = backend).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -894,6 +747,209 @@
         "h": 8,
         "w": 12,
         "x": 0,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (method, uri) (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\", peer=\"backend\"}[5m]))",
+          "legendFormat": "{{method}} {{uri}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Proxied calls by status",
+      "description": "Status the backend answered; IO_ERROR is the frontend's own value when no answer came at all.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (status) (rate(http_client_requests_seconds_count{namespace=~\"$namespace\", job=\"frontend\", peer=\"backend\"}[5m]))",
+          "legendFormat": "{{status}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Hop latency: client side vs. backend server side",
+      "description": "p95 of the proxied call as the frontend measures it against the p95 the backend measures for the same requests; the gap is network, connection setup and queueing between the pods.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 3,
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_client_requests_seconds_bucket{namespace=~\"$namespace\", job=\"frontend\", peer=\"backend\"}[5m])))",
+          "legendFormat": "frontend -> backend (client p95)",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{namespace=~\"$namespace\", job=\"backend\"}[5m])))",
+          "legendFormat": "backend (server p95)",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(http_client_requests_seconds_bucket{namespace=~\"$namespace\", job=\"frontend\", peer=\"backend\"}[5m])))",
+          "legendFormat": "frontend -> backend (client p50)",
+          "range": true,
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Proxied bytes",
+      "description": "Bodies sent to the backend and received from it, per backend route.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
         "y": 30
       },
       "fieldConfig": {
@@ -932,8 +988,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (uri) (rate(http_server_request_bytes_total{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
-          "legendFormat": "in {{uri}}",
+          "expr": "sum by (uri) (rate(http_client_request_bytes_total{namespace=~\"$namespace\", job=\"frontend\", peer=\"backend\"}[5m]))",
+          "legendFormat": "to backend {{uri}}",
           "range": true,
           "refId": "A"
         },
@@ -943,135 +999,17 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (uri) (rate(http_server_response_bytes_total{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
-          "legendFormat": "out {{uri}}",
+          "expr": "sum by (uri) (rate(http_client_response_bytes_total{namespace=~\"$namespace\", job=\"frontend\", peer=\"backend\"}[5m]))",
+          "legendFormat": "from backend {{uri}}",
           "range": true,
           "refId": "B"
-        }
-      ]
-    },
-    {
-      "id": 16,
-      "type": "timeseries",
-      "title": "Connections and threads",
-      "description": "Open connections on the request listener (keep-alive included) and Tomcat's request threads; busy threads at the configured maximum means the connector is saturated.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 30
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "decimals": 0,
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "lineWidth": 1,
-            "showPoints": "never"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".*limit.*"
-            },
-            "properties": [
-              {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    10,
-                    10
-                  ],
-                  "fill": "dash"
-                }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(http_server_connections_active{namespace=~\"$namespace\", job=\"backend\", listener=\"main\"})",
-          "legendFormat": "connections open",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(tomcat_threads_busy_threads{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "threads busy",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(tomcat_threads_current_threads{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "threads current",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "max(tomcat_threads_config_max_threads{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "threads max (limit)",
-          "range": true,
-          "refId": "D"
         }
       ]
     },
     {
       "id": 17,
       "type": "row",
-      "title": "Database hop (backend -> managed PostgreSQL)",
+      "title": "Traffic",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -1084,8 +1022,8 @@
     {
       "id": 18,
       "type": "timeseries",
-      "title": "Connection pool",
-      "description": "HikariCP connections per state, summed over the backend pods; pending is what requests are waiting for.",
+      "title": "Open connections per listener",
+      "description": "TCP connections on the request listener (users, via Traefik) and on the admin listener (probes and the scrape).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1108,29 +1046,156 @@
             "showPoints": "never"
           }
         },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (listener) (http_server_connections_active{namespace=~\"$namespace\", job=\"frontend\"})",
+          "legendFormat": "{{listener}}",
+          "range": true,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Bytes by route",
+      "description": "Request bodies received (in) and response bodies sent (out) per route class.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (uri) (rate(http_server_request_bytes_total{namespace=~\"$namespace\", job=\"frontend\"}[5m]))",
+          "legendFormat": "in {{uri}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (uri) (rate(http_server_response_bytes_total{namespace=~\"$namespace\", job=\"frontend\"}[5m]))",
+          "legendFormat": "out {{uri}}",
+          "range": true,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "Runtime and health",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "panels": []
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Go runtime",
+      "description": "Goroutines and resident memory of the server process (client_golang collectors).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 48
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "lineWidth": 1,
+            "showPoints": "never"
+          }
+        },
         "overrides": [
           {
             "matcher": {
               "id": "byRegexp",
-              "options": ".*limit.*"
+              "options": "rss.*"
             },
             "properties": [
               {
-                "id": "custom.lineStyle",
-                "value": {
-                  "dash": [
-                    10,
-                    10
-                  ],
-                  "fill": "dash"
-                }
-              },
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
+                "id": "unit",
+                "value": "bytes"
               }
             ]
           }
@@ -1159,8 +1224,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(hikaricp_connections_active{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "active",
+          "expr": "sum by (pod) (go_goroutines{namespace=~\"$namespace\", job=\"frontend\"})",
+          "legendFormat": "goroutines {{pod}}",
           "range": true,
           "refId": "A"
         },
@@ -1170,253 +1235,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(hikaricp_connections_idle{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "idle",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(hikaricp_connections_pending{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "pending",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(hikaricp_connections_max{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "max (limit)",
-          "range": true,
-          "refId": "D"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum(increase(hikaricp_connections_timeout_total{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
-          "legendFormat": "timeouts (5m)",
-          "range": true,
-          "refId": "E"
-        }
-      ]
-    },
-    {
-      "id": 19,
-      "type": "timeseries",
-      "title": "Connection timing",
-      "description": "Average time to obtain a connection from the pool, time a connection is held per use, and time to create a new one against the managed database.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 39
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "decimals": 4,
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "lineWidth": 1,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum (rate(hikaricp_connections_acquire_seconds_sum{namespace=~\"$namespace\", job=\"backend\"}[5m])) / sum (rate(hikaricp_connections_acquire_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
-          "legendFormat": "acquire",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum (rate(hikaricp_connections_usage_seconds_sum{namespace=~\"$namespace\", job=\"backend\"}[5m])) / sum (rate(hikaricp_connections_usage_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
-          "legendFormat": "usage",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum (rate(hikaricp_connections_creation_seconds_sum{namespace=~\"$namespace\", job=\"backend\"}[5m])) / sum (rate(hikaricp_connections_creation_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
-          "legendFormat": "creation",
-          "range": true,
-          "refId": "C"
-        }
-      ]
-    },
-    {
-      "id": 20,
-      "type": "timeseries",
-      "title": "Repository calls by method",
-      "description": "Spring Data repository invocations per second (UserRepository: save, findByEmail, findById, ...), the database work behind the routes.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 47
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops",
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "normal"
-            }
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (method) (rate(spring_data_repository_invocations_seconds_count{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
-          "legendFormat": "{{method}}",
-          "range": true,
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 21,
-      "type": "timeseries",
-      "title": "Repository call latency (p95) by method",
-      "description": "Where the database time goes: the p95 per repository method; ERROR state calls appear in the legend when they happen.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 47
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "decimals": 4,
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "lineWidth": 1,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, method) (rate(spring_data_repository_invocations_seconds_bucket{namespace=~\"$namespace\", job=\"backend\"}[5m])))",
-          "legendFormat": "{{method}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (method) (rate(spring_data_repository_invocations_seconds_count{namespace=~\"$namespace\", job=\"backend\", state=\"ERROR\"}[5m]))",
-          "legendFormat": "errors/s {{method}}",
+          "expr": "sum by (pod) (process_resident_memory_bytes{namespace=~\"$namespace\", job=\"frontend\"})",
+          "legendFormat": "rss {{pod}}",
           "range": true,
           "refId": "B"
         }
@@ -1424,22 +1244,9 @@
     },
     {
       "id": 22,
-      "type": "row",
-      "title": "Runtime and health",
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 55
-      },
-      "panels": []
-    },
-    {
-      "id": 23,
       "type": "timeseries",
-      "title": "JVM memory",
-      "description": "Used memory per area of the GraalVM native-image runtime (heap = eden + survivor + old generation).",
+      "title": "GC and CPU",
+      "description": "Garbage-collection pause (p50 and max of the last cycles) and the process CPU rate.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1447,81 +1254,13 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 56
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "bytes",
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 0,
-            "lineWidth": 1,
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (area) (jvm_memory_used_bytes{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "used {{area}}",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (area) (jvm_memory_committed_bytes{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "committed {{area}}",
-          "range": true,
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "id": 24,
-      "type": "timeseries",
-      "title": "Threads, GC and CPU",
-      "description": "Live JVM threads, the share of CPU the garbage collector takes, and the process CPU share as the runtime sees it.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
         "x": 12,
-        "y": 56
+        "y": 48
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "s",
+          "decimals": 4,
           "min": 0,
           "custom": {
             "drawStyle": "line",
@@ -1530,7 +1269,20 @@
             "showPoints": "never"
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "cpu (cores)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "legend": {
@@ -1555,8 +1307,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(jvm_threads_live_threads{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "threads live",
+          "expr": "max(go_gc_duration_seconds{namespace=~\"$namespace\", job=\"frontend\", quantile=\"0.5\"})",
+          "legendFormat": "gc pause p50",
           "range": true,
           "refId": "A"
         },
@@ -1566,8 +1318,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(jvm_threads_peak_threads{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "threads peak",
+          "expr": "max(go_gc_duration_seconds{namespace=~\"$namespace\", job=\"frontend\", quantile=\"1\"})",
+          "legendFormat": "gc pause max",
           "range": true,
           "refId": "B"
         },
@@ -1577,90 +1329,18 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max(jvm_gc_overhead{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "gc overhead (share)",
+          "expr": "sum(rate(process_cpu_seconds_total{namespace=~\"$namespace\", job=\"frontend\"}[5m]))",
+          "legendFormat": "cpu (cores)",
           "range": true,
           "refId": "C"
-        },
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "max(process_cpu_usage{namespace=~\"$namespace\", job=\"backend\"})",
-          "legendFormat": "process cpu (share)",
-          "range": true,
-          "refId": "D"
         }
       ]
     },
     {
-      "id": 25,
-      "type": "timeseries",
-      "title": "Log events by level",
-      "description": "logback_events_total per level: an error rate in the logs next to the error rate on the wire.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 18,
-        "y": 56
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops",
-          "min": 0,
-          "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "lineWidth": 1,
-            "showPoints": "never",
-            "stacking": {
-              "mode": "normal"
-            }
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "calcs": [
-            "mean",
-            "max",
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "editorMode": "code",
-          "expr": "sum by (level) (rate(logback_events_total{namespace=~\"$namespace\", job=\"backend\"}[5m]))",
-          "legendFormat": "{{level}}",
-          "range": true,
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 26,
+      "id": 23,
       "type": "timeseries",
       "title": "Health checks (1 = ok)",
-      "description": "health_check_up per check from the admin port: spring-context (the application context is up) and database (the managed PostgreSQL answers). A failing check makes /readyz answer 503 and takes the pod out of rotation.",
+      "description": "health_check_up per check from the admin port: static-root (the exported bundle is readable) and backend-api (user-mgmt-service answers). A failing check makes /readyz answer 503 and takes the pod out of rotation.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1669,7 +1349,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 64
+        "y": 56
       },
       "fieldConfig": {
         "defaults": {
@@ -1709,7 +1389,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "min by (check) (health_check_up{namespace=~\"$namespace\", job=\"backend\"})",
+          "expr": "min by (check) (health_check_up{namespace=~\"$namespace\", job=\"frontend\"})",
           "legendFormat": "{{check}}",
           "range": true,
           "refId": "A"
@@ -1717,7 +1397,7 @@
       ]
     },
     {
-      "id": 27,
+      "id": 24,
       "type": "timeseries",
       "title": "Health check duration",
       "description": "How long each check took in its last cycle (the timeout bound is HEALTH_CHECK_TIMEOUT); a rising line is a dependency getting slower before it fails.",
@@ -1729,7 +1409,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 64
+        "y": 56
       },
       "fieldConfig": {
         "defaults": {
@@ -1768,7 +1448,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (check) (health_check_duration_seconds{namespace=~\"$namespace\", job=\"backend\"})",
+          "expr": "max by (check) (health_check_duration_seconds{namespace=~\"$namespace\", job=\"frontend\"})",
           "legendFormat": "{{check}}",
           "range": true,
           "refId": "A"
@@ -1779,7 +1459,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max(health_snapshot_age_seconds{namespace=~\"$namespace\", job=\"backend\"})",
+          "expr": "max(health_snapshot_age_seconds{namespace=~\"$namespace\", job=\"frontend\"})",
           "legendFormat": "snapshot age",
           "range": true,
           "refId": "B"
@@ -1787,7 +1467,7 @@
       ]
     },
     {
-      "id": 28,
+      "id": 25,
       "type": "row",
       "title": "Pods",
       "collapsed": false,
@@ -1795,14 +1475,14 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 71
+        "y": 63
       },
       "panels": []
     },
     {
-      "id": 29,
+      "id": 26,
       "type": "timeseries",
-      "title": "backend pods - CPU",
+      "title": "frontend pods - CPU",
       "description": "cAdvisor usage of the containers against the limit from the environment overlay.",
       "datasource": {
         "type": "prometheus",
@@ -1812,7 +1492,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 72
+        "y": 64
       },
       "fieldConfig": {
         "defaults": {
@@ -1877,7 +1557,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\", container=\"backend\"}[5m]))",
+          "expr": "sum by (pod) (rate(container_cpu_usage_seconds_total{namespace=~\"$namespace\", container=\"frontend\"}[5m]))",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -1888,7 +1568,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max(kube_pod_container_resource_limits{namespace=~\"$namespace\", container=\"backend\", resource=\"cpu\"})",
+          "expr": "max(kube_pod_container_resource_limits{namespace=~\"$namespace\", container=\"frontend\", resource=\"cpu\"})",
           "legendFormat": "limit",
           "range": true,
           "refId": "B"
@@ -1896,9 +1576,9 @@
       ]
     },
     {
-      "id": 30,
+      "id": 27,
       "type": "timeseries",
-      "title": "backend pods - memory",
+      "title": "frontend pods - memory",
       "description": "Working set of the containers against the limit; this is what the OOM killer looks at.",
       "datasource": {
         "type": "prometheus",
@@ -1908,7 +1588,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 72
+        "y": 64
       },
       "fieldConfig": {
         "defaults": {
@@ -1972,7 +1652,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=~\"$namespace\", container=\"backend\"})",
+          "expr": "sum by (pod) (container_memory_working_set_bytes{namespace=~\"$namespace\", container=\"frontend\"})",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -1983,7 +1663,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max(kube_pod_container_resource_limits{namespace=~\"$namespace\", container=\"backend\", resource=\"memory\"})",
+          "expr": "max(kube_pod_container_resource_limits{namespace=~\"$namespace\", container=\"frontend\", resource=\"memory\"})",
           "legendFormat": "limit",
           "range": true,
           "refId": "B"
@@ -1991,9 +1671,9 @@
       ]
     },
     {
-      "id": 31,
+      "id": 28,
       "type": "timeseries",
-      "title": "backend replicas",
+      "title": "frontend replicas",
       "description": "Ready replicas against what the HorizontalPodAutoscaler wants (Aufgabe 6).",
       "datasource": {
         "type": "prometheus",
@@ -2003,7 +1683,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 72
+        "y": 64
       },
       "fieldConfig": {
         "defaults": {
@@ -2043,7 +1723,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (namespace) (kube_deployment_status_replicas_ready{namespace=~\"$namespace\", deployment=~\".*-backend\"})",
+          "expr": "sum by (namespace) (kube_deployment_status_replicas_ready{namespace=~\"$namespace\", deployment=~\".*-frontend\"})",
           "legendFormat": "{{namespace}} ready",
           "range": true,
           "refId": "A"
@@ -2054,7 +1734,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (namespace) (kube_horizontalpodautoscaler_status_desired_replicas{namespace=~\"$namespace\", horizontalpodautoscaler=~\".*-backend\"})",
+          "expr": "sum by (namespace) (kube_horizontalpodautoscaler_status_desired_replicas{namespace=~\"$namespace\", horizontalpodautoscaler=~\".*-frontend\"})",
           "legendFormat": "{{namespace}} desired (HPA)",
           "range": true,
           "refId": "B"
@@ -2065,7 +1745,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (namespace) (kube_horizontalpodautoscaler_spec_max_replicas{namespace=~\"$namespace\", horizontalpodautoscaler=~\".*-backend\"})",
+          "expr": "sum by (namespace) (kube_horizontalpodautoscaler_spec_max_replicas{namespace=~\"$namespace\", horizontalpodautoscaler=~\".*-frontend\"})",
           "legendFormat": "{{namespace}} max (HPA)",
           "range": true,
           "refId": "C"
