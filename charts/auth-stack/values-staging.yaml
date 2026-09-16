@@ -13,11 +13,11 @@ generic-stack:
     # psql client of the schema seed Job (the component itself is disabled)
     db:
       image:
-        tag: "0.0.1" # promoted by CI
+        tag: "0.0.2" # promoted by CI
 
     backend:
       image:
-        tag: "0.0.2" # promoted by CI
+        tag: "0.0.3" # promoted by CI
       # same scaling mechanics as prod, smaller bounds
       hpa:
         enabled: true
@@ -30,7 +30,7 @@ generic-stack:
 
     frontend:
       image:
-        tag: "0.0.1" # promoted by CI
+        tag: "0.0.2" # promoted by CI
       pdb:
         enabled: true
         maxUnavailable: 1
