@@ -27,6 +27,13 @@ resource "digitalocean_database_user" "environment" {
   for_each   = var.environments
   cluster_id = digitalocean_database_cluster.postgres.id
   name       = "auth_${each.key}"
+
+  lifecycle {
+    # The API answers the creation of a role with an empty settings object the
+    # provider records; removing it is an empty settings update the API rejects.
+    # These roles declare no settings (those are Kafka/OpenSearch ACLs).
+    ignore_changes = [settings]
+  }
 }
 
 # Only the Kubernetes cluster's nodes may connect; operator addresses have to
@@ -74,6 +81,12 @@ resource "digitalocean_database_user" "modules" {
   for_each   = var.environments
   cluster_id = digitalocean_database_cluster.mysql.id
   name       = "modules_${each.key}"
+
+  lifecycle {
+    # As for the PostgreSQL roles: settings belong to the API, not to this
+    # configuration.
+    ignore_changes = [settings]
+  }
 }
 
 resource "digitalocean_database_firewall" "mysql" {
