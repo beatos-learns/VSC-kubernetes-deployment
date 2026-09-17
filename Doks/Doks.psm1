@@ -1394,6 +1394,7 @@ function Initialize-DoksCluster {
             # and verifies the server against the cluster CA (PEM, indented into the block scalar)
             $modPassword = [System.Uri]::EscapeDataString($modRole.password)
             $caBlock = (($modules.Info.ca.Trim() -split "`r?`n") | ForEach-Object { '    ' + $_ }) -join "`n"
+            # ${dbName} and ${modName} stay in braces: PowerShell would read $dbName?sslmode as one variable name
             $manifest = @"
 apiVersion: v1
 kind: Secret
@@ -1405,7 +1406,7 @@ stringData:
   db-host: "$($database.Info.host)"
   db-port: "$($database.Info.port)"
   db-name: "$dbName"
-  db-url: "jdbc:postgresql://$($database.Info.host):$($database.Info.port)/$dbName?sslmode=require"
+  db-url: "jdbc:postgresql://$($database.Info.host):$($database.Info.port)/${dbName}?sslmode=require"
   db-user: "$($role.user)"
   db-password: "$($role.password)"
   db-admin-user: "$($database.Credentials.admin.user)"
@@ -1418,7 +1419,7 @@ stringData:
   mysql-admin-password: "$($modules.Credentials.admin.password)"
   mysql-ca: |
 $caBlock
-  database-url: "mysql+pymysql://$($modRole.user):$modPassword@$($modules.Info.host):$($modules.Info.port)/$modName?charset=utf8mb4"
+  database-url: "mysql+pymysql://$($modRole.user):$modPassword@$($modules.Info.host):$($modules.Info.port)/${modName}?charset=utf8mb4"
 "@
             Invoke-KubectlManifest -Manifest $manifest -Arguments @('create', '-f', '-')
             Write-Host "  Secret $SecretName created (managed PostgreSQL $dbName as $($role.user), managed MySQL $modName as $($modRole.user), random jwt-secret)." -ForegroundColor Green

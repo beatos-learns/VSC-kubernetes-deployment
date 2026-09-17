@@ -277,13 +277,15 @@ kube-prometheus-stack:
     defaultDashboardsTimezone: Europe/Zurich
     sidecar:
       # Both sidecars (dashboards, datasources) - unbounded unless set here.
+      # Python processes that burst while they file the dashboard ConfigMaps;
+      # a 100m limit throttles every burst and delays the reload.
       resources:
         requests:
-          cpu: 20m
-          memory: 64Mi
+          cpu: 50m
+          memory: 96Mi
         limits:
-          cpu: 100m
-          memory: 128Mi
+          cpu: 200m
+          memory: 192Mi
       dashboards:
         enabled: true
         folderAnnotation: grafana_folder
@@ -296,17 +298,23 @@ kube-prometheus-stack:
       # Reached through `kubectl port-forward` only (no public endpoint).
       server:
         root_url: http://localhost:3000/
+      plugins:
+        # Grafana 13 ships the Prometheus datasource as a bundled plugin and
+        # would update it from grafana.com at start; on the read-only image
+        # filesystem that update kills the plugin. Nothing is installed at start.
+        preinstall_disabled: true
     testFramework:
       enabled: false
-    # ~40 provisioned dashboards (the chart's set plus files/dashboards/) are
-    # loaded at start: ~360Mi idle, hence the headroom.
+    # Grafana 13 holds ~430Mi resident for the ~40 provisioned dashboards (the
+    # chart's set plus files/dashboards/) and runs every bundled datasource
+    # plugin as its own process; below ~1Gi the container thrashes on page cache.
     resources:
       requests:
-        cpu: 100m
-        memory: 256Mi
-      limits:
-        cpu: 500m
+        cpu: 200m
         memory: 512Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
 
   kube-state-metrics:
     resources:
