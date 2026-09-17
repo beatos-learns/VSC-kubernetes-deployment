@@ -94,7 +94,7 @@ terraform -chdir=terraform output -json database_credentials | jq .   # roles + 
 ## Managed MySQL (Aufgabe 6, Microservices)
 
 The module service keeps its modules in a second managed cluster of the same
-shape: `db-s-1vcpu-1gb` MySQL 8 in the DOKS VPC, database and login role per
+shape: `db-s-1vcpu-1gb` MySQL 8.4 in the DOKS VPC, database and login role per
 environment (`modules_staging`, `modules_prod`), the same cluster-only
 firewall. Its outputs feed the same Secrets - `modules_database` (private
 host, port, database names and the cluster **CA certificate** the service
