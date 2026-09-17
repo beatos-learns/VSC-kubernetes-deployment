@@ -113,9 +113,9 @@ variable "database_trusted_ips" {
 # same shape and size class as the PostgreSQL cluster, one database and one
 # login role per environment (modules_<name>).
 variable "mysql_version" {
-  description = "MySQL major version of the managed cluster (doctl databases options versions --engine mysql); the module service targets 8."
+  description = "MySQL major version of the managed cluster (doctl databases options versions --engine mysql); the module service targets 8.4."
   type        = string
-  default     = "8"
+  default     = "8.4"
 }
 
 variable "mysql_size" {

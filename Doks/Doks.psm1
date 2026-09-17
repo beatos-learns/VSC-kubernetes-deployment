@@ -342,6 +342,39 @@ function Get-DoksErrorText {
     $trimmed -replace '^Error:\s*', ''
 }
 
+# Pipeline sink for terraform output: the "<resource>: Still creating... [1m20s elapsed]"
+# ticks become one dotted line per set of resources in flight (like Wait-DoksNodeReady),
+# one dot per tick; every other line passes through unchanged.
+function Write-DoksTerraformProgress {
+    [CmdletBinding()]
+    param([Parameter(ValueFromPipeline)][AllowNull()]$InputObject)
+    begin {
+        $inFlight = [ordered]@{}   # resource -> verb (creating, destroying, ...)
+        $header   = $null
+    }
+    process {
+        $line = [string]$InputObject
+        if ($line -match '^(?<resource>\S+): Still (?<verb>\w+)\.\.\. \[') {
+            $first = -not $inFlight.Contains($Matches.resource) -or $Matches.resource -eq @($inFlight.Keys)[0]
+            $inFlight[$Matches.resource] = $Matches.verb
+            $verbs = @($inFlight.Values | Select-Object -Unique) -join '/'
+            $next  = "  still $verbs $($inFlight.Keys -join ', ') "
+            if ($next -ne $header) {
+                if ($header) { Write-Host '' }
+                Write-Host $next -NoNewline
+                $header = $next
+            }
+            if ($first) { Write-Host '.' -NoNewline }
+            return
+        }
+        if ($header) { Write-Host ''; $header = $null }
+        if ($line -match '^(?<resource>\S+): (?<verb>\w+)\.\.\.$') { $inFlight[$Matches.resource] = $Matches.verb.ToLowerInvariant() }
+        elseif ($line -match '^(?<resource>\S+): \w+ complete after ') { $inFlight.Remove($Matches.resource) }
+        Write-Host $line
+    }
+    end { if ($header) { Write-Host '' } }
+}
+
 function Invoke-DoksNative {
     [CmdletBinding()]
     param(
@@ -1136,7 +1169,7 @@ function Sync-DoksTerraform {
             }
             if ($PSCmdlet.ShouldProcess($TerraformDir, 'terraform apply -auto-approve (adopt the cluster, create or keep the managed databases)')) {
                 Write-Host '> terraform apply -auto-approve  (new managed databases take about 5 minutes)' -ForegroundColor DarkGray
-                & $exe "-chdir=$TerraformDir" apply -input=false -auto-approve | Out-Host
+                & $exe "-chdir=$TerraformDir" apply -input=false -auto-approve 2>&1 | Write-DoksTerraformProgress
                 if ($LASTEXITCODE -ne 0) { throw "terraform apply failed (exit code $LASTEXITCODE)." }
                 Write-Host "Terraform applied: cluster adopted, managed databases ready." -ForegroundColor Green
             }
