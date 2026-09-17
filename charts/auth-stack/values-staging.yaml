@@ -37,13 +37,13 @@ generic-stack:
       ingress:
         # the API on the environment's host (bootstrap/README.md step 6)
         hosts:
-          - host: auth-staging.139-59-206-48.nip.io
+          - host: auth-staging.129-212-254-51.nip.io
             paths:
               - path: /users
               - path: /modules
         tls:
           - hosts:
-              - auth-staging.139-59-206-48.nip.io
+              - auth-staging.129-212-254-51.nip.io
             secretName: auth-staging-tls
 
     frontend:
@@ -55,10 +55,10 @@ generic-stack:
       ingress:
         # nip.io host on the Traefik LB IP (bootstrap/README.md step 6)
         hosts:
-          - host: auth-staging.139-59-206-48.nip.io
+          - host: auth-staging.129-212-254-51.nip.io
         tls:
           - hosts:
-              - auth-staging.139-59-206-48.nip.io
+              - auth-staging.129-212-254-51.nip.io
             secretName: auth-staging-tls
 
     modules:

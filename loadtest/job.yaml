@@ -47,7 +47,7 @@ spec:
           env:
             # ---- what to test -------------------------------------------------
             - name: TARGET_URL
-              value: https://auth-staging.139-59-206-48.nip.io
+              value: https://auth-staging.129-212-254-51.nip.io
             - name: PEAK_VUS
               value: "5"
             # The test account: created on first use via /api/signup, reused
