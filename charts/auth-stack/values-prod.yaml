@@ -17,7 +17,7 @@ generic-stack:
 
     backend:
       image:
-        tag: "0.0.4" # promoted via PR
+        tag: "0.0.5" # promoted via PR
       # Aufgabe 6: autoscaled (the chart omits `replicas` from the workload)
       hpa:
         enabled: true
