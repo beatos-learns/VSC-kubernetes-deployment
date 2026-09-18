@@ -5,6 +5,12 @@ Everything here is applied **once** per cluster, by hand — or by
 After step 4 the cluster converges on git: no further `kubectl apply` or
 `helm install` against the apps, ever (Aufgabe 4, Pipeline).
 
+The checks of steps 7, 10, 11 and 12 and the load test (`loadtest/README.md`)
+are one command as well: `Test-DoksStack` from the `Doks` module runs them in
+that order and prints one line per check, including a parallel-users phase that
+exercises every interaction from eight sessions at once; `-LoadTest` appends the
+k6 run, which `Start-DoksLoadTest` also starts on its own.
+
 Prerequisites: `doctl`, `kubectl`, `helm`, `terraform` (the managed database
 and its credentials come from `terraform/`, step 1). Cluster sizing: 2 × `s-2vcpu-4gb`
 (autoscale 2–10) — see `Doks/Doks.defaults.psd1`; the quotas, anti-affinity and
@@ -379,6 +385,10 @@ curl -sk -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $tok
   "$host/users/$me/modules/00000000-0000-0000-0000-000000000000"              # 404: unknown module, nothing assigned
 curl -sk "$host/users/me" -H "Authorization: Bearer $token" | jq .moduleIds
 ```
+
+`Test-DoksStack` walks this sequence with the load test account (Secret
+`k6-test-user`): it assigns the first module the module service lists, expects
+404 for an unknown one, reads the assignment back and unassigns it again.
 
 A module service that does not answer (pods down, MySQL health check red)
 turns the module endpoints into `503` after the client's retries, while

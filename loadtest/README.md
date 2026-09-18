@@ -62,6 +62,13 @@ kubectl -n loadtest logs -f job/k6-user-mgmt-service      # live k6 output + sum
 kubectl -n loadtest get job k6-user-mgmt-service          # Complete = thresholds held, Failed = breached
 ```
 
+With the `Doks` module, `Start-DoksLoadTest [-Environment prod] [-PeakVus 8]`
+does the same in one command: it creates the account Secret when it is missing,
+points the Job at the Ingress host of the environment, applies this directory
+and prints the backend HPA (CPU against its target, replicas) every 30 seconds
+until the Job ends, then the threshold lines. `Test-DoksStack -LoadTest` runs it
+after the other verification steps.
+
 Profile: 1 min → ¼ peak, 2 min → ½ peak, 2 min → peak, 3 min plateau,
 1 min → 0 (9 minutes). Thresholds (`options.thresholds` in the script) state
 what "available under load" means - p95 login < 2 s, p95 `/api/me` < 1 s,

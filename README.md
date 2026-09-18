@@ -54,7 +54,11 @@ New-DoksCluster | Sync-DoksTerraform | Bootstrap-DoksCluster; Connect-DoksPortFo
 `terraform/` and creates the managed databases, `Bootstrap-DoksCluster` hands
 it to ArgoCD and writes the load balancer IP into the nip.io hosts, and
 `Connect-DoksPortForward` opens every UI on localhost with its credentials
-(`Doks/README.md`). The cluster facts the line writes (`terraform.tfvars`, the
+(`Doks/README.md`). `Test-DoksStack` then verifies the result in the order the
+stack is built (GitOps, TLS, front door, policies, monitoring, module
+assignment, parallel users) and `Start-DoksLoadTest` runs the k6 load test of
+`loadtest/`.
+The cluster facts the line writes (`terraform.tfvars`, the
 hosts in the overlays and the load test) go back through a pull request.
 
 ## Layout
@@ -143,9 +147,9 @@ charts/auth-stack/          wrapper chart:
                             PrometheusRule (backend, frontend, module service,
                             the hops between them, health checks)
 Doks/                       PowerShell module: create/connect/delete the
-                            throwaway DOKS cluster and run the bootstrap once
-                            Terraform has created the databases; see
-                            Doks/README.md
+                            throwaway DOKS cluster, run the bootstrap once
+                            Terraform has created the databases, verify the
+                            stack and run the load test; see Doks/README.md
 terraform/                  the DOKS cluster (adopted, Aufgabe 3 Terraform), the
                             managed PostgreSQL (created, Aufgabe 4 Managed
                             Ressources) and the managed MySQL of the module
