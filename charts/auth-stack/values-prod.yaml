@@ -17,7 +17,7 @@ generic-stack:
 
     backend:
       image:
-        tag: "0.0.5" # promoted via PR
+        tag: "0.0.6" # promoted via PR
       # Aufgabe 6: autoscaled (the chart omits `replicas` from the workload)
       hpa:
         enabled: true
@@ -49,7 +49,7 @@ generic-stack:
 
     frontend:
       image:
-        tag: "0.0.2" # promoted via PR
+        tag: "0.0.3" # promoted via PR
       replicas: 2
       pdb:
         enabled: true
@@ -67,7 +67,7 @@ generic-stack:
     # and node loss, not for throughput
     modules:
       image:
-        tag: "0.0.1" # promoted via PR
+        tag: "0.0.2" # promoted via PR
       replicas: 2
       pdb:
         enabled: true
