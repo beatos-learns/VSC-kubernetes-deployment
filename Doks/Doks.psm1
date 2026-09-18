@@ -17,6 +17,8 @@
         Sync-DoksTerraform                 # terraform.tfvars = this cluster, state, init + apply (managed database)
         Bootstrap-DoksCluster              # GitOps handover: secrets from terraform output, ArgoCD, root app, LB IP into the nip.io hosts
         Connect-DoksPortForward            # ArgoCD, Grafana, Prometheus, Alertmanager on localhost, with credentials
+        Test-DoksStack                     # verification in order: GitOps, TLS, front door, policies, monitoring, module assignment, parallel users (-LoadTest adds k6)
+        Start-DoksLoadTest                 # k6 load test from loadtest/ against staging or prod, followed to the end
         Get-DoksCluster                    # what is running (= what is billing) right now
         Use-DoksCluster k8s-test-fra1      # point this window at an existing cluster
         Disconnect-DoksCluster             # forget the cluster in this window
@@ -1905,6 +1907,847 @@ function Test-DoksSetup {
 }
 
 # ---------------------------------------------------------------------------
+# Verification: Start-DoksLoadTest (loadtest/) and Test-DoksStack (the checks
+# of bootstrap/README.md and loadtest/README.md, in order)
+# ---------------------------------------------------------------------------
+
+function Get-DoksCurl {
+    # curl.exe (Windows ships one under System32, Git for Windows another) - not
+    # the Invoke-WebRequest alias of Windows PowerShell.
+    if ($script:ToolPaths['curl']) { return $script:ToolPaths['curl'] }
+    $cmd = Get-Command -Name 'curl.exe' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $cmd) { $cmd = Get-Command -Name 'curl' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
+    if (-not $cmd) { throw "curl was not found on PATH (Windows 10 and later ship C:\Windows\System32\curl.exe)." }
+    $script:ToolPaths['curl'] = $cmd.Source
+    $cmd.Source
+}
+
+function Invoke-DoksHttp {
+    # One HTTP call through curl: -k because the environments carry Let's Encrypt
+    # staging certificates, the body via stdin so credentials never reach a
+    # command line. Never throws on HTTP errors; Code is 0 when nothing answered.
+    param(
+        [Parameter(Mandatory)][string]$Url,
+        [string]$Method = 'GET',
+        [hashtable]$Headers = @{},
+        [string]$Body,
+        [string]$BasicAuth,
+        [int]$TimeoutSeconds = 30
+    )
+    $curl = Get-DoksCurl
+    $headerFile = [IO.Path]::GetTempFileName()
+    $bodyFile = [IO.Path]::GetTempFileName()
+    try {
+        $arguments = @('-sk', '-m', "$TimeoutSeconds", '-o', $bodyFile, '-D', $headerFile, '-w', '%{http_code}', '-X', $Method)
+        foreach ($name in $Headers.Keys) { $arguments += @('-H', "${name}: $($Headers[$name])") }
+        if ($BasicAuth) { $arguments += @('-u', $BasicAuth) }
+        $hasBody = $PSBoundParameters.ContainsKey('Body')
+        if ($hasBody) { $arguments += @('-H', 'Content-Type: application/json', '--data-binary', '@-') }
+        $arguments += $Url
+        $ErrorActionPreference = 'Continue'
+        if ($hasBody) { $code = @($Body | & $curl @arguments 2>$null) -join '' }
+        else { $code = @(& $curl @arguments 2>$null) -join '' }
+        $responseHeaders = @{}
+        foreach ($line in @(Get-Content -Path $headerFile -ErrorAction SilentlyContinue)) {
+            if ($line -match '^HTTP/') { $responseHeaders = @{}; continue }
+            if ($line -match '^([^:]+):\s*(.*)$') { $responseHeaders[$Matches[1].Trim().ToLowerInvariant()] = $Matches[2].Trim() }
+        }
+        $content = ''
+        if (Test-Path -LiteralPath $bodyFile) { $content = [System.IO.File]::ReadAllText($bodyFile) }
+        [pscustomobject]@{ Code = [int]("0$code" -replace '[^0-9]', ''); Headers = $responseHeaders; Body = $content }
+    }
+    finally {
+        Remove-Item -LiteralPath $headerFile, $bodyFile -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function ConvertFrom-DoksJsonBody {
+    param([string]$Text)
+    if (-not $Text -or -not $Text.Trim()) { return $null }
+    try { ConvertFrom-Json -InputObject $Text } catch { $null }
+}
+
+function Get-DoksSecretValue {
+    param([Parameter(Mandatory)][string]$Namespace, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$Key)
+    try {
+        $encoded = @(Invoke-DoksKubectlProbe -Arguments @('-n', $Namespace, 'get', 'secret', $Name, '-o', "jsonpath={.data.$Key}")) -join ''
+        if ($encoded.Trim()) { return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded.Trim())) }
+    }
+    catch { }
+    $null
+}
+
+function Invoke-DoksKubectlProbe {
+    # Invoke-Kubectl with three attempts: a verification must not fail on a
+    # transient DNS or connection error of the workstation.
+    param([Parameter(Mandatory)][string[]]$Arguments, [switch]$Json)
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        try { return (Invoke-Kubectl -Arguments $Arguments -Json:$Json) }
+        catch {
+            if ($attempt -ge 3 -or $_.Exception.Message -notmatch 'no such host|Unable to connect to the server|connection refused|i/o timeout|TLS handshake timeout|EOF') { throw }
+            Start-Sleep -Seconds 3
+        }
+    }
+}
+
+function Get-DoksEnvironmentHost {
+    # The public host of an environment: the frontend Ingress carries it.
+    param([Parameter(Mandatory)][string]$Namespace)
+    $hostName = (@(Invoke-DoksKubectlProbe -Arguments @('-n', $Namespace, 'get', 'ingress', 'auth-frontend', '-o', 'jsonpath={.spec.rules[0].host}')) -join '').Trim()
+    if (-not $hostName) { throw "Ingress auth-frontend in $Namespace has no host - Sync-DoksHostname, committed and synced?" }
+    $hostName
+}
+
+function Invoke-DoksPrometheusQuery {
+    # Instant query through the API server's service proxy: no port-forward, no
+    # login (Prometheus has none). Returns the result vector.
+    param([Parameter(Mandatory)][string]$Query)
+    $path = '/api/v1/namespaces/monitoring/services/monitoring-kube-prometheus-prometheus:9090/proxy/api/v1/query?query=' + [Uri]::EscapeDataString($Query)
+    $raw = (@(Invoke-DoksKubectlProbe -Arguments @('get', '--raw', $path)) -join "`n").Trim()
+    $answer = ConvertFrom-Json -InputObject $raw
+    if ($answer.status -ne 'success') { throw "Prometheus answered $($answer.status): $($answer.error)" }
+    @($answer.data.result)
+}
+
+function Start-DoksProbeForward {
+    # A port-forward on a free local port for the duration of one check
+    # (Grafana needs its login header, Alertmanager a POST - neither goes
+    # through the API server proxy).
+    param([Parameter(Mandatory)][string]$Namespace, [Parameter(Mandatory)][string]$Target, [Parameter(Mandatory)][int]$RemotePort)
+    $kubectl = Get-DoksTool -Name kubectl
+    $log = [IO.Path]::GetTempFileName()
+    $err = [IO.Path]::GetTempFileName()
+    $process = Start-Process -FilePath $kubectl -PassThru -NoNewWindow `
+        -ArgumentList @('-n', $Namespace, 'port-forward', $Target, ":$RemotePort") `
+        -RedirectStandardOutput $log -RedirectStandardError $err
+    $port = 0
+    for ($i = 0; $i -lt 80; $i++) {
+        Start-Sleep -Milliseconds 250
+        $line = @(Get-Content -Path $log -ErrorAction SilentlyContinue | Where-Object { $_ -match 'Forwarding from 127\.0\.0\.1:(\d+)' } | Select-Object -First 1) -join ''
+        if ($line -match 'Forwarding from 127\.0\.0\.1:(\d+)') { $port = [int]$Matches[1]; break }
+        if ($process.HasExited) { break }
+    }
+    if (-not $port) {
+        $reason = @(Get-Content -Path $err -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }) -join ' '
+        try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch { }
+        Remove-Item -LiteralPath $log, $err -Force -ErrorAction SilentlyContinue
+        throw "port-forward to $Namespace/$Target did not come up: $reason"
+    }
+    [pscustomobject]@{ Process = $process; Port = $port; Url = "http://127.0.0.1:$port"; Log = $log; Error = $err }
+}
+
+function Stop-DoksProbeForward {
+    param($Forward)
+    if (-not $Forward) { return }
+    if (-not $Forward.Process.HasExited) { try { Stop-Process -Id $Forward.Process.Id -Force -ErrorAction Stop } catch { } }
+    Remove-Item -LiteralPath $Forward.Log, $Forward.Error -Force -ErrorAction SilentlyContinue
+}
+
+function Initialize-DoksTestUserSecret {
+    # The load test's account (loadtest/README.md step 1): namespace + Secret
+    # with a random password, created once, never printed. Returns the email.
+    param([Parameter(Mandatory)][string]$Namespace, [Parameter(Mandatory)][string]$SecretName, [string]$Email = 'k6-loadtest@example.com')
+    if (-not (Test-DoksKubectlResource -Kind namespace -Name $Namespace)) {
+        Invoke-DoksKubectlProbe -Arguments @('create', 'namespace', $Namespace) | Out-Null
+    }
+    $existing = Get-DoksSecretValue -Namespace $Namespace -Name $SecretName -Key email
+    if ($existing) { return $existing }
+    $password = New-DoksRandomSecret -Bytes 24
+    $manifest = @"
+apiVersion: v1
+kind: Secret
+metadata:
+  name: $SecretName
+  namespace: $Namespace
+type: Opaque
+stringData:
+  email: "$Email"
+  password: "$password"
+"@
+    Invoke-KubectlManifest -Manifest $manifest -Arguments @('create', '-f', '-')
+    Write-Host "  Secret $Namespace/$SecretName created: $Email with a random password (registered on first use; the first user registered in an environment becomes ADMIN)." -ForegroundColor DarkGray
+    $Email
+}
+
+function Get-DoksLoadTestManifest {
+    # kustomize output of loadtest/ with the Job pointed at the environment's
+    # host (TARGET_URL) and, when given, the plateau (PEAK_VUS).
+    param([Parameter(Mandatory)][string]$LoadDir, [Parameter(Mandatory)][string]$HostName, [int]$PeakVus)
+    $rendered = (@(Invoke-DoksKubectlProbe -Arguments @('kustomize', $LoadDir)) -join "`n")
+    $rendered = [regex]::Replace($rendered, '(?m)(- name: TARGET_URL\r?\n\s+value: )\S+', ('${1}https://' + $HostName))
+    if ($PeakVus -gt 0) { $rendered = [regex]::Replace($rendered, '(?m)(- name: PEAK_VUS\r?\n\s+value: )"?\d+"?', ('${1}"' + $PeakVus + '"')) }
+    $rendered
+}
+
+function Start-DoksLoadTest {
+    <#
+    .SYNOPSIS
+        Starts the k6 load test of loadtest/ against an environment and follows it to the end.
+
+    .DESCRIPTION
+        loadtest/README.md as one command: makes sure the test account's Secret
+        exists (namespace loadtest, Secret k6-test-user, random password),
+        renders loadtest/ with kustomize, points the Job at the environment's
+        public host (the frontend Ingress of auth-<environment>), replaces a
+        previous Job and applies it. Then it follows the run: every 30 seconds
+        one line with the backend HPA (CPU against its target, replicas) and the
+        k6 pod's phase, until the Job is Complete (thresholds held) or Failed
+        (a threshold was breached - that is the result). The k6 threshold
+        lines are printed at the end; the k6 metrics stay in Prometheus under
+        testid = the pod name (Grafana: k6 load test).
+        The account is registered by k6 on first use. The first user ever
+        registered in an environment becomes ADMIN (seed SQL): register your
+        own admin before the first run against a fresh environment.
+
+    .PARAMETER Environment
+        staging (default) or prod.
+
+    .PARAMETER PeakVus
+        Virtual users at the plateau. Default: the value in loadtest/job.yaml (5).
+
+    .PARAMETER RepoRoot
+        Repository root containing loadtest/. Default: the folder above this module.
+
+    .PARAMETER NoWait
+        Return right after the Job is created; follow it with
+        kubectl -n loadtest logs -f job/k6-user-mgmt-service.
+
+    .EXAMPLE
+        Start-DoksLoadTest
+        Staging, 5 virtual users, followed to the end.
+
+    .EXAMPLE
+        Start-DoksLoadTest -Environment prod -PeakVus 8 -NoWait
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    [OutputType([pscustomobject])]
+    param(
+        [ValidateSet('staging', 'prod')][string]$Environment = 'staging',
+        [ValidateRange(1, 200)][int]$PeakVus,
+        [string]$RepoRoot,
+        [switch]$NoWait,
+        [string]$Namespace = 'loadtest',
+        [string]$SecretName = 'k6-test-user',
+        [string]$JobName = 'k6-user-mgmt-service'
+    )
+    if (-not $env:KUBECONFIG) { throw 'No KUBECONFIG in this window - run Use-DoksCluster <name> first.' }
+    if (-not $RepoRoot) { $RepoRoot = Split-Path -Path $PSScriptRoot -Parent }
+    $RepoRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RepoRoot)
+    $loadDir = Join-Path -Path $RepoRoot -ChildPath 'loadtest'
+    if (-not (Test-Path -LiteralPath (Join-Path -Path $loadDir -ChildPath 'kustomization.yaml') -PathType Leaf)) { throw "No loadtest/kustomization.yaml under $RepoRoot - pass -RepoRoot pointing at the ops repository." }
+    $ns = "auth-$Environment"
+    $hostName = Get-DoksEnvironmentHost -Namespace $ns
+    $email = Initialize-DoksTestUserSecret -Namespace $Namespace -SecretName $SecretName
+    $manifest = Get-DoksLoadTestManifest -LoadDir $loadDir -HostName $hostName -PeakVus $PeakVus
+    $peak = [regex]::Match($manifest, '(?m)- name: PEAK_VUS\r?\n\s+value: "?(\d+)"?').Groups[1].Value
+    if (-not $PSCmdlet.ShouldProcess("$Namespace/$JobName", "k6 against https://$hostName, peak $peak VUs, account $email")) { return }
+    try { Invoke-DoksKubectlProbe -Arguments @('-n', $Namespace, 'delete', 'job', $JobName, '--ignore-not-found', '--wait=true') | Out-Null } catch { }
+    Invoke-KubectlManifest -Manifest $manifest -Arguments @('apply', '-f', '-')
+    Write-Host "k6 Job $Namespace/$JobName -> https://$hostName as $email, peak $peak VUs (9 minutes: ramp, plateau, ramp down)." -ForegroundColor Cyan
+    if ($NoWait) {
+        Write-Host "  Follow it: kubectl -n $Namespace logs -f job/$JobName   (HPA: kubectl -n $ns get hpa auth-backend -w)" -ForegroundColor DarkGray
+        return [pscustomobject]@{ Environment = $Environment; Host = $hostName; PeakVus = [int]$peak; Result = 'Started'; Minutes = 0; MinReplicas = $null; MaxReplicas = $null; TestId = $null }
+    }
+    Write-Host "  Every 30 s: the backend HPA of $ns and the k6 pod." -ForegroundColor DarkGray
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $maxReplicas = 0; $minReplicas = [int]::MaxValue; $phase = 'Pending'; $result = 'Timeout'; $testId = $null; $misses = 0
+    while ($watch.Elapsed.TotalMinutes -lt 25) {
+        Start-Sleep -Seconds 30
+        try { $job = Invoke-DoksKubectlProbe -Arguments @('-n', $Namespace, 'get', 'job', $JobName) -Json; $misses = 0 }
+        catch {
+            $misses++
+            $reason = ($_.Exception.Message -replace '\s+', ' '); if ($reason.Length -gt 120) { $reason = $reason.Substring(0, 120) + '...' }
+            Write-Host ("  {0:mm\:ss}  kubectl unreachable ({1}) - the Job keeps running, retrying" -f $watch.Elapsed, $reason) -ForegroundColor Yellow
+            if ($misses -ge 8) { throw "kubectl unreachable for $misses polls in a row: $reason" }
+            continue
+        }
+        $hpaText = 'no HPA'
+        try {
+            $hpa = Invoke-DoksKubectlProbe -Arguments @('-n', $ns, 'get', 'hpa', 'auth-backend') -Json
+            $current = [int]$hpa.status.currentReplicas
+            $utilisation = @($hpa.status.currentMetrics | ForEach-Object { $_.resource.current.averageUtilization } | Where-Object { $null -ne $_ })
+            if ($current -gt $maxReplicas) { $maxReplicas = $current }
+            if ($current -lt $minReplicas) { $minReplicas = $current }
+            $hpaText = "backend cpu $(if ($utilisation.Count) { "$($utilisation[0])%" } else { '?' })/$($hpa.spec.metrics[0].resource.target.averageUtilization)%, replicas $current (desired $($hpa.status.desiredReplicas))"
+        }
+        catch { }
+        $pods = @()
+        try { $pods = @((Invoke-DoksKubectlProbe -Arguments @('-n', $Namespace, 'get', 'pods', '-l', "job-name=$JobName") -Json).items) } catch { }
+        if ($pods.Count -gt 0) { $phase = $pods[-1].status.phase; $testId = $pods[-1].metadata.name }
+        Write-Host ("  {0:mm\:ss}  {1}  k6 pod {2}" -f $watch.Elapsed, $hpaText, $phase) -ForegroundColor DarkGray
+        if ([int]$job.status.succeeded -ge 1) { $result = 'Complete'; break }
+        if ([int]$job.status.failed -ge 1) { $result = 'Failed'; break }
+    }
+    $summary = @()
+    try { $summary = @(Invoke-DoksKubectlProbe -Arguments @('-n', $Namespace, 'logs', "job/$JobName", '--tail=80')) } catch { }
+    foreach ($line in @($summary | Where-Object { $_ -match 'http_req_failed|http_req_duration|checks|thresholds|setup:' })) { Write-Host "    $($line.TrimEnd())" -ForegroundColor DarkGray }
+    $replicas = if ($maxReplicas -gt 0) { "backend replicas $minReplicas to $maxReplicas" } else { 'HPA not read' }
+    switch ($result) {
+        'Complete' { Write-Host "k6 Complete after $([int]$watch.Elapsed.TotalMinutes) min: every threshold held; $replicas. Metrics: Grafana > auth-stack > k6 load test, testid=$testId." -ForegroundColor Green }
+        'Failed' { Write-Host "k6 Failed after $([int]$watch.Elapsed.TotalMinutes) min: a threshold was breached (the lines above); $replicas. Metrics: testid=$testId." -ForegroundColor Red }
+        default { Write-Host "k6 did not finish within 25 minutes (pod $phase): kubectl -n $Namespace describe job $JobName" -ForegroundColor Red }
+    }
+    [pscustomobject]@{ Environment = $Environment; Host = $hostName; PeakVus = [int]$peak; Result = $result; Minutes = [int]$watch.Elapsed.TotalMinutes; MinReplicas = $(if ($maxReplicas -gt 0) { $minReplicas } else { $null }); MaxReplicas = $(if ($maxReplicas -gt 0) { $maxReplicas } else { $null }); TestId = $testId }
+}
+
+function Invoke-DoksUserStorm {
+    # Parallel user sessions against one environment: every interaction a user
+    # or an API client performs (sign-up, login, profile, module list, module
+    # assignment and removal, logout, a wrong password), repeated by N sessions
+    # for a number of seconds. Mode 'distinct' gives every session its own
+    # account (k6-loadtest+<n>@...), 'shared' lets every session use the test
+    # account - the two together separate throughput from per-user contention.
+    # Returns one row per interaction type: calls, errors, avg, p95, max seconds.
+    param(
+        [Parameter(Mandatory)][string]$HostName,
+        [Parameter(Mandatory)][string]$Email,
+        [Parameter(Mandatory)][string]$Password,
+        [ValidateSet('distinct', 'shared')][string]$Mode = 'distinct',
+        [ValidateRange(1, 64)][int]$Sessions = 8,
+        [ValidateRange(5, 600)][int]$Seconds = 45
+    )
+    $curl = Get-DoksCurl
+    $worker = {
+        param([string]$Curl, [string]$HostName, [string]$Email, [string]$Password, [int]$Seconds, [int]$Session, [string]$Mode)
+        $results = New-Object System.Collections.Generic.List[object]
+        $temp = [IO.Path]::GetTempPath()
+        $jar = Join-Path $temp ("doks-storm-{0}-{1}.cookies" -f $PID, $Session)
+        function Invoke-Call {
+            param([string]$Type, [string]$Method, [string]$Url, [string]$Body, [string]$Token, [switch]$Cookies, [int[]]$Expect)
+            $bodyFile = Join-Path $temp ("doks-storm-{0}-{1}.body" -f $PID, $Session)
+            $headerFile = Join-Path $temp ("doks-storm-{0}-{1}.headers" -f $PID, $Session)
+            $arguments = @('-sk', '-m', '60', '-o', $bodyFile, '-D', $headerFile, '-w', '%{http_code} %{time_total}', '-X', $Method, '-H', 'Content-Type: application/json')
+            if ($Token) { $arguments += @('-H', "Authorization: Bearer $Token") }
+            if ($Cookies) { $arguments += @('-b', $jar, '-c', $jar) }
+            if ($Body) { $arguments += @('--data-binary', '@-') }
+            $arguments += $Url
+            $ErrorActionPreference = 'Continue'
+            if ($Body) { $out = @($Body | & $Curl @arguments 2>$null) -join '' } else { $out = @(& $Curl @arguments 2>$null) -join '' }
+            $parts = $out.Trim() -split '\s+'
+            $code = 0; $seconds = 0.0
+            if ($parts.Count -ge 1) { $code = [int]("0" + ($parts[0] -replace '[^0-9]', '')) }
+            if ($parts.Count -ge 2) { $seconds = [double]::Parse($parts[1], [Globalization.CultureInfo]::InvariantCulture) }
+            $content = ''; $auth = ''
+            if (Test-Path -LiteralPath $bodyFile) { $content = [IO.File]::ReadAllText($bodyFile) }
+            if (Test-Path -LiteralPath $headerFile) {
+                $line = @(Get-Content -Path $headerFile | Where-Object { $_ -match '^[Aa]uthorization:\s*Bearer\s+(\S+)' } | Select-Object -Last 1) -join ''
+                if ($line -match 'Bearer\s+(\S+)') { $auth = $Matches[1] }
+            }
+            $results.Add([pscustomobject]@{ Type = $Type; Code = $code; Seconds = $seconds; Ok = ($Expect -contains $code) })
+            [pscustomobject]@{ Code = $code; Body = $content; Token = $auth }
+        }
+        $account = $Email
+        if ($Mode -eq 'distinct') { $account = $Email -replace '@', "+s$Session@" }
+        $credentials = '{"email":"' + $account + '","password":"' + ($Password -replace '"', '\"') + '"}'
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        $first = $true
+        while ($watch.Elapsed.TotalSeconds -lt $Seconds) {
+            Remove-Item -LiteralPath $jar -Force -ErrorAction SilentlyContinue
+            if ($first -and $Mode -eq 'distinct') {
+                # 201 new, 409 exists; the backend answers a duplicate with 500 today
+                Invoke-Call -Type 'signup' -Method POST -Url "https://$HostName/api/signup" -Body ('{"firstName":"storm","lastName":"session' + $Session + '","email":"' + $account + '","password":"' + ($Password -replace '"', '\"') + '"}') -Expect @(201, 409, 500) | Out-Null
+            }
+            $first = $false
+            $login = Invoke-Call -Type 'login' -Method POST -Url "https://$HostName/users/login" -Body $credentials -Expect @(200)
+            $token = $login.Token
+            if (-not $token) { Start-Sleep -Milliseconds 500; continue }
+            $me = Invoke-Call -Type 'profile' -Method GET -Url "https://$HostName/users/me" -Token $token -Expect @(200)
+            $userId = ''
+            try { $userId = (ConvertFrom-Json -InputObject $me.Body).id } catch { }
+            $modules = Invoke-Call -Type 'modules' -Method GET -Url "https://$HostName/modules" -Token $token -Expect @(200)
+            $moduleId = ''
+            try { $list = @(ConvertFrom-Json -InputObject $modules.Body); if ($list.Count -gt 0) { $moduleId = $list[0].id } } catch { }
+            if ($userId -and $moduleId) {
+                Invoke-Call -Type 'assign' -Method POST -Url "https://$HostName/users/$userId/modules/$moduleId" -Token $token -Expect @(200) | Out-Null
+                Invoke-Call -Type 'unassign' -Method DELETE -Url "https://$HostName/users/$userId/modules/$moduleId" -Token $token -Expect @(200) | Out-Null
+            }
+            Invoke-Call -Type 'login (frontend)' -Method POST -Url "https://$HostName/api/login" -Body $credentials -Cookies -Expect @(200) | Out-Null
+            Invoke-Call -Type 'profile (frontend)' -Method GET -Url "https://$HostName/api/me" -Cookies -Expect @(200) | Out-Null
+            Invoke-Call -Type 'logout (frontend)' -Method POST -Url "https://$HostName/api/logout" -Cookies -Expect @(200, 204) | Out-Null
+            Invoke-Call -Type 'wrong password' -Method POST -Url "https://$HostName/users/login" -Body ('{"email":"' + $account + '","password":"not-the-password"}') -Expect @(401, 403) | Out-Null
+        }
+        Remove-Item -LiteralPath $jar, (Join-Path $temp ("doks-storm-{0}-{1}.body" -f $PID, $Session)), (Join-Path $temp ("doks-storm-{0}-{1}.headers" -f $PID, $Session)) -Force -ErrorAction SilentlyContinue
+        $results
+    }
+    $jobs = @()
+    for ($n = 1; $n -le $Sessions; $n++) {
+        $jobs += Start-Job -ScriptBlock $worker -ArgumentList $curl, $HostName, $Email, $Password, $Seconds, $n, $Mode
+    }
+    $null = Wait-Job -Job $jobs -Timeout ($Seconds + 180)
+    $samples = @()
+    foreach ($job in $jobs) {
+        if ($job.State -eq 'Completed') { $samples += @(Receive-Job -Job $job) }
+        else { Write-Verbose "storm session $($job.Id) ended in state $($job.State)" }
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+    }
+    $order = @('signup', 'login', 'profile', 'modules', 'assign', 'unassign', 'login (frontend)', 'profile (frontend)', 'logout (frontend)', 'wrong password')
+    $rows = @()
+    foreach ($type in $order) {
+        $set = @($samples | Where-Object { $_.Type -eq $type })
+        if ($set.Count -eq 0) { continue }
+        $sorted = @($set | ForEach-Object { [double]$_.Seconds } | Sort-Object)
+        $p95 = $sorted[[Math]::Min($sorted.Count - 1, [Math]::Floor(0.95 * $sorted.Count))]
+        $sum = 0.0; foreach ($v in $sorted) { $sum += $v }
+        $rows += [pscustomobject]@{
+            Type = $type; Calls = $set.Count; Errors = @($set | Where-Object { -not $_.Ok }).Count
+            Avg = [Math]::Round($sum / $sorted.Count, 2); P95 = [Math]::Round($p95, 2); Max = [Math]::Round($sorted[-1], 2)
+            Codes = (@($set | Group-Object Code | Sort-Object Count -Descending | ForEach-Object { "$($_.Name) x$($_.Count)" }) -join ' ')
+        }
+    }
+    $rows
+}
+
+function Test-DoksStack {
+    <#
+    .SYNOPSIS
+        Runs the platform's verification steps in order against the connected cluster.
+
+    .DESCRIPTION
+        The checks of bootstrap/README.md and loadtest/README.md as one command,
+        in the order the stack is built. One row per check (Step, Check, Status
+        OK / FAIL / SKIP, Detail), printed as it completes and returned at the end:
+          1. cluster      every node Ready
+          2. gitops       every ArgoCD Application Synced and Healthy
+          3. workloads    per environment: Deployments available, seed Jobs
+                          succeeded, the HPA reads its metric
+          4. tls          the environment's Certificate is Ready (step 7)
+          5. front door   the public host answers: / redirects to the login
+                          page, /api/me and /users refuse anonymous callers
+          6. policies     ClusterPolicies ready; charts/policies/tests/violations.yaml
+                          is denied by the admission webhook with nothing
+                          created; no failed policy report in the application
+                          namespaces (step 11)
+          7. monitoring   Prometheus scrapes every component of every
+                          environment and every platform job, the environments'
+                          PrometheusRules exist, Grafana answers a query through
+                          its Prometheus datasource and carries the repository's
+                          dashboards, Alertmanager accepts a synthetic alert and
+                          routes it to the webhook receiver (step 10; the
+                          delivery itself shows up in the channel's inbox)
+          8. end to end   log in as the test account, list the modules through
+                          the module service, assign one, get 404 for an unknown
+                          one, read the assignment back, unassign it (step 12)
+          9. parallel     every user interaction (sign-up, login, profile,
+             users        module list, assign and remove a module, the
+                          frontend's login/profile/logout, a wrong password)
+                          from -ParallelSessions sessions at once for
+                          -ParallelSeconds, first with one account per session,
+                          then all on the shared test account; per interaction
+                          calls, errors, average, p95 and maximum; FAIL when a
+                          p95 exceeds the load test's thresholds (login and
+                          modules 2 s, profile 1 s) or more than 5 % fail
+         10. load test    with -LoadTest: Start-DoksLoadTest per environment -
+                          the thresholds decide, the HPA replicas are reported
+        Steps 8 to 10 need the load test's account (Secret k6-test-user in
+        namespace loadtest). Without it, or when it cannot log in, they are
+        SKIP: Start-DoksLoadTest creates and registers it, -CreateTestUser does
+        the same here. The first user ever registered in an environment becomes
+        ADMIN (seed SQL), so register your own admin first. Step 9 registers
+        one extra account per session (k6-loadtest+s<n>@..., same password).
+
+    .PARAMETER Environment
+        Environments to verify: staging, prod (namespace auth-<name>). Default: both.
+
+    .PARAMETER RepoRoot
+        Repository root (charts/policies/tests/violations.yaml, loadtest/,
+        charts/monitoring/files/dashboards/). Default: the folder above this module.
+
+    .PARAMETER LoadTest
+        Run the k6 load test (about 10 minutes per environment) after the other checks.
+
+    .PARAMETER PeakVus
+        Virtual users at the plateau of the load test. Default: the value in loadtest/job.yaml (5).
+
+    .PARAMETER CreateTestUser
+        Create the test account's Secret if missing and register the account in
+        an environment where it cannot log in yet.
+
+    .PARAMETER SkipAlertTest
+        Do not send the synthetic alert (the notification channel receives it otherwise).
+
+    .PARAMETER ParallelSessions
+        Sessions of the parallel-users step (default 8); 0 skips the step.
+
+    .PARAMETER ParallelSeconds
+        Duration of each parallel-users phase in seconds (default 45).
+
+    .EXAMPLE
+        Test-DoksStack
+        Everything except the load test, both environments.
+
+    .EXAMPLE
+        Test-DoksStack -Environment staging -LoadTest
+        Staging including the k6 run; watch the HPA lines while it runs.
+
+    .EXAMPLE
+        Test-DoksStack | Where-Object Status -ne OK
+        Only what needs attention.
+    #>
+    [CmdletBinding()]
+    [OutputType([pscustomobject])]
+    param(
+        [ValidateSet('staging', 'prod')][string[]]$Environment = @('staging', 'prod'),
+        [string]$RepoRoot,
+        [switch]$LoadTest,
+        [ValidateRange(1, 200)][int]$PeakVus,
+        [switch]$CreateTestUser,
+        [switch]$SkipAlertTest,
+        [ValidateRange(0, 64)][int]$ParallelSessions = 8,
+        [ValidateRange(5, 600)][int]$ParallelSeconds = 45,
+        [string]$TestUserNamespace = 'loadtest',
+        [string]$TestUserSecret = 'k6-test-user'
+    )
+    if (-not $env:KUBECONFIG) { throw 'No KUBECONFIG in this window - run Use-DoksCluster <name> first.' }
+    if (-not $RepoRoot) { $RepoRoot = Split-Path -Path $PSScriptRoot -Parent }
+    $RepoRoot = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($RepoRoot)
+    $rows = New-Object System.Collections.Generic.List[object]
+    $add = {
+        param([string]$Step, [string]$Check, [string]$Status, [string]$Detail)
+        $rows.Add([pscustomobject]@{ Step = $Step; Check = $Check; Status = $Status; Detail = $Detail })
+        $color = switch ($Status) { 'OK' { 'Green' } 'FAIL' { 'Red' } default { 'Yellow' } }
+        Write-Host ("  [{0,-4}] {1,-46} {2}" -f $Status, $Check, $Detail) -ForegroundColor $color
+    }
+    $header = { param([string]$Text) Write-Host $Text -ForegroundColor Cyan }
+    $short = {
+        param([string]$Text)
+        $t = ($Text -replace '\s+', ' ').Trim()
+        if ($t.Length -gt 160) { $t = $t.Substring(0, 160) + '...' }
+        $t
+    }
+
+    # ---- 1. cluster ---------------------------------------------------------
+    & $header 'Cluster'
+    try {
+        $nodes = @((Invoke-DoksKubectlProbe -Arguments @('get', 'nodes') -Json).items)
+        $notReady = @($nodes | Where-Object { -not (@($_.status.conditions | Where-Object { $_.type -eq 'Ready' -and $_.status -eq 'True' }).Count) })
+        $context = @(Invoke-DoksKubectlProbe -Arguments @('config', 'current-context')) -join ''
+        if ($notReady.Count -eq 0) { & $add 'cluster' 'nodes Ready' 'OK' "$($nodes.Count) node(s), context $context" }
+        else { & $add 'cluster' 'nodes Ready' 'FAIL' "not Ready: $(@($notReady | ForEach-Object { $_.metadata.name }) -join ', ')" }
+    }
+    catch { & $add 'cluster' 'nodes Ready' 'FAIL' (& $short $_.Exception.Message) }
+
+    # ---- 2. gitops ----------------------------------------------------------
+    & $header 'GitOps (ArgoCD)'
+    try {
+        $apps = @((Invoke-DoksKubectlProbe -Arguments @('-n', 'argocd', 'get', 'applications') -Json).items)
+        $bad = @($apps | Where-Object { $_.status.sync.status -ne 'Synced' -or $_.status.health.status -ne 'Healthy' })
+        if ($apps.Count -eq 0) { & $add 'gitops' 'Applications Synced and Healthy' 'FAIL' 'no Application in namespace argocd - Bootstrap-DoksCluster first' }
+        elseif ($bad.Count -eq 0) { & $add 'gitops' 'Applications Synced and Healthy' 'OK' "$($apps.Count) applications" }
+        else { & $add 'gitops' 'Applications Synced and Healthy' 'FAIL' (@($bad | ForEach-Object { "$($_.metadata.name): $($_.status.sync.status)/$($_.status.health.status)" }) -join ', ') }
+    }
+    catch { & $add 'gitops' 'Applications Synced and Healthy' 'FAIL' (& $short $_.Exception.Message) }
+
+    # ---- 3.-5. per environment: workloads, tls, front door --------------------
+    $hosts = @{}
+    foreach ($envName in $Environment) {
+        $ns = "auth-$envName"
+        & $header "Environment $envName ($ns)"
+        try {
+            $deployments = @((Invoke-DoksKubectlProbe -Arguments @('-n', $ns, 'get', 'deployments') -Json).items)
+            $unavailable = @($deployments | Where-Object { [int]$_.status.availableReplicas -lt [int]$_.spec.replicas })
+            if ($deployments.Count -eq 0) { & $add $envName 'Deployments available' 'FAIL' "no Deployment in $ns" }
+            elseif ($unavailable.Count -eq 0) { & $add $envName 'Deployments available' 'OK' (@($deployments | ForEach-Object { "$($_.metadata.name) $($_.status.availableReplicas)/$($_.spec.replicas)" }) -join ', ') }
+            else { & $add $envName 'Deployments available' 'FAIL' (@($unavailable | ForEach-Object { "$($_.metadata.name) $([int]$_.status.availableReplicas)/$($_.spec.replicas)" }) -join ', ') }
+        }
+        catch { & $add $envName 'Deployments available' 'FAIL' (& $short $_.Exception.Message) }
+        try {
+            $jobs = @((Invoke-DoksKubectlProbe -Arguments @('-n', $ns, 'get', 'jobs') -Json).items | Where-Object { $_.metadata.name -match 'seed' })
+            if ($jobs.Count -eq 0) { & $add $envName 'seed Jobs succeeded' 'SKIP' 'no seed Job present (hook already cleaned up)' }
+            else {
+                $failed = @($jobs | Where-Object { [int]$_.status.succeeded -lt 1 })
+                if ($failed.Count -eq 0) { & $add $envName 'seed Jobs succeeded' 'OK' (@($jobs | ForEach-Object { $_.metadata.name }) -join ', ') }
+                else { & $add $envName 'seed Jobs succeeded' 'FAIL' (@($failed | ForEach-Object { "$($_.metadata.name): succeeded=$([int]$_.status.succeeded) failed=$([int]$_.status.failed)" }) -join ', ') }
+            }
+        }
+        catch { & $add $envName 'seed Jobs succeeded' 'FAIL' (& $short $_.Exception.Message) }
+        try {
+            $hpas = @((Invoke-DoksKubectlProbe -Arguments @('-n', $ns, 'get', 'hpa') -Json).items)
+            if ($hpas.Count -eq 0) { & $add $envName 'HPA reads its metric' 'SKIP' 'no HorizontalPodAutoscaler' }
+            else {
+                $blind = @($hpas | Where-Object { -not @($_.status.currentMetrics | Where-Object { $null -ne $_.resource.current.averageUtilization }).Count })
+                $text = @($hpas | ForEach-Object {
+                    $u = @($_.status.currentMetrics | ForEach-Object { $_.resource.current.averageUtilization } | Where-Object { $null -ne $_ })
+                    "$($_.metadata.name): cpu $(if ($u.Count) { "$($u[0])%" } else { '<unknown>' })/$($_.spec.metrics[0].resource.target.averageUtilization)%, $($_.status.currentReplicas) of $($_.spec.minReplicas)-$($_.spec.maxReplicas) replicas"
+                }) -join '; '
+                if ($blind.Count -eq 0) { & $add $envName 'HPA reads its metric' 'OK' $text } else { & $add $envName 'HPA reads its metric' 'FAIL' $text }
+            }
+        }
+        catch { & $add $envName 'HPA reads its metric' 'FAIL' (& $short $_.Exception.Message) }
+        try {
+            $certificates = @((Invoke-DoksKubectlProbe -Arguments @('-n', $ns, 'get', 'certificates') -Json).items)
+            $notReady = @($certificates | Where-Object { -not @($_.status.conditions | Where-Object { $_.type -eq 'Ready' -and $_.status -eq 'True' }).Count })
+            if ($certificates.Count -eq 0) { & $add $envName 'TLS certificate Ready' 'FAIL' 'no Certificate - are the Ingress hosts set (Sync-DoksHostname, committed)?' }
+            elseif ($notReady.Count -eq 0) { & $add $envName 'TLS certificate Ready' 'OK' (@($certificates | ForEach-Object { "$($_.metadata.name) for $($_.spec.dnsNames -join ', ')" }) -join '; ') }
+            else { & $add $envName 'TLS certificate Ready' 'FAIL' (@($notReady | ForEach-Object { "$($_.metadata.name): $(@($_.status.conditions | Where-Object { $_.type -eq 'Ready' } | ForEach-Object { $_.message }) -join ' ')" }) -join '; ') }
+        }
+        catch { & $add $envName 'TLS certificate Ready' 'FAIL' (& $short $_.Exception.Message) }
+        try {
+            $hostName = Get-DoksEnvironmentHost -Namespace $ns
+            $hosts[$envName] = $hostName
+            $attempt = 0
+            do {
+                $attempt++
+                $root = Invoke-DoksHttp -Url "https://$hostName/"
+                $me = Invoke-DoksHttp -Url "https://$hostName/api/me"
+                $users = Invoke-DoksHttp -Url "https://$hostName/users"
+                if ((@($root.Code, $me.Code, $users.Code) -contains 0) -and $attempt -lt 3) { Start-Sleep -Seconds 3 } else { break }
+            } while ($true)
+            $detail = "https://$hostName : / $($root.Code), /api/me $($me.Code), /users $($users.Code)"
+            if ((@(200, 302) -contains $root.Code) -and $me.Code -eq 401 -and $users.Code -eq 403) { & $add $envName 'front door (LB, Traefik, frontend, backend)' 'OK' $detail }
+            else { & $add $envName 'front door (LB, Traefik, frontend, backend)' 'FAIL' "$detail (expected 302 or 200, 401, 403)" }
+        }
+        catch { & $add $envName 'front door (LB, Traefik, frontend, backend)' 'FAIL' (& $short $_.Exception.Message) }
+    }
+
+    # ---- 6. policies ----------------------------------------------------------
+    & $header 'Policies (Kyverno)'
+    try {
+        $policies = @((Invoke-DoksKubectlProbe -Arguments @('get', 'clusterpolicies') -Json).items)
+        $notReady = @($policies | Where-Object { -not ("$($_.status.ready)" -eq 'True' -or @($_.status.conditions | Where-Object { $_.type -eq 'Ready' -and $_.status -eq 'True' }).Count -gt 0) })
+        if ($policies.Count -eq 0) { & $add 'policies' 'ClusterPolicies ready' 'FAIL' 'no ClusterPolicy (infra-policies not synced?)' }
+        elseif ($notReady.Count -eq 0) { & $add 'policies' 'ClusterPolicies ready' 'OK' (@($policies | ForEach-Object { $_.metadata.name }) -join ', ') }
+        else { & $add 'policies' 'ClusterPolicies ready' 'FAIL' "not ready: $(@($notReady | ForEach-Object { $_.metadata.name }) -join ', ')" }
+    }
+    catch { & $add 'policies' 'ClusterPolicies ready' 'FAIL' (& $short $_.Exception.Message) }
+    $fixture = Join-Path -Path $RepoRoot -ChildPath 'charts/policies/tests/violations.yaml'
+    if (-not (Test-Path -LiteralPath $fixture -PathType Leaf)) { & $add 'policies' 'violations.yaml denied' 'SKIP' "$fixture not found - pass -RepoRoot" }
+    else {
+        try {
+            $expected = @([regex]::Matches([System.IO.File]::ReadAllText($fixture), '(?m)^kind: Deployment\s*$')).Count
+            $denied = 0; $message = ''
+            try {
+                Invoke-DoksKubectlProbe -Arguments @('apply', '-f', $fixture) | Out-Null
+                $message = 'kubectl apply succeeded'
+            }
+            catch {
+                $message = $_.Exception.Message
+                $denied = @([regex]::Matches($message, 'denied the request')).Count
+            }
+            $created = @(Invoke-DoksKubectlProbe -Arguments @('get', 'deployments', '-A', '-l', 'app.kubernetes.io/instance=violations', '-o', 'jsonpath={range .items[*]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}') | Where-Object { $_.Trim() })
+            foreach ($item in $created) {
+                $parts = $item.Trim() -split '/'
+                try { Invoke-DoksKubectlProbe -Arguments @('-n', $parts[0], 'delete', 'deployment', $parts[1], '--ignore-not-found') | Out-Null } catch { }
+            }
+            if ($denied -eq $expected -and $created.Count -eq 0) { & $add 'policies' 'violations.yaml denied' 'OK' "$denied of $expected Deployments denied by the admission webhook, nothing created" }
+            else { & $add 'policies' 'violations.yaml denied' 'FAIL' "$denied of $expected denied, $($created.Count) created (removed again): $(& $short $message)" }
+        }
+        catch { & $add 'policies' 'violations.yaml denied' 'FAIL' (& $short $_.Exception.Message) }
+    }
+    foreach ($envName in $Environment) {
+        $ns = "auth-$envName"
+        try {
+            $reports = @((Invoke-DoksKubectlProbe -Arguments @('-n', $ns, 'get', 'policyreports') -Json).items)
+            $fails = 0; foreach ($r in $reports) { $fails += [int]$r.summary.fail }
+            if ($reports.Count -eq 0) { & $add 'policies' "policy reports $ns" 'SKIP' 'no PolicyReport yet (background scan pending)' }
+            elseif ($fails -eq 0) { & $add 'policies' "policy reports $ns" 'OK' "$($reports.Count) reports, 0 failed" }
+            else { & $add 'policies' "policy reports $ns" 'FAIL' "$fails failed result(s): kubectl -n $ns get policyreport -o yaml | grep -B3 -A6 'result: fail'" }
+        }
+        catch { & $add 'policies' "policy reports $ns" 'FAIL' (& $short $_.Exception.Message) }
+    }
+
+    # ---- 7. monitoring --------------------------------------------------------
+    & $header 'Monitoring'
+    foreach ($envName in $Environment) {
+        $ns = "auth-$envName"
+        try {
+            $jobs = @(Invoke-DoksPrometheusQuery -Query "count by (job) (up{namespace=`"$ns`"})")
+            $down = @(Invoke-DoksPrometheusQuery -Query "count by (job) (up{namespace=`"$ns`"} == 0)")
+            $names = @($jobs | ForEach-Object { "$($_.metric.job) x$($_.value[1])" })
+            if ($jobs.Count -lt 3) { & $add 'monitoring' "Prometheus scrapes $ns" 'FAIL' "targets: $($names -join ', ') (expected backend, frontend, modules)" }
+            elseif ($down.Count -eq 0) { & $add 'monitoring' "Prometheus scrapes $ns" 'OK' ($names -join ', ') }
+            else { & $add 'monitoring' "Prometheus scrapes $ns" 'FAIL' "down: $(@($down | ForEach-Object { $_.metric.job }) -join ', ')" }
+        }
+        catch { & $add 'monitoring' "Prometheus scrapes $ns" 'FAIL' (& $short $_.Exception.Message) }
+        try {
+            $rules = @(Invoke-DoksKubectlProbe -Arguments @('-n', $ns, 'get', 'prometheusrules', '-o', 'name') | Where-Object { $_.Trim() })
+            if ($rules.Count -gt 0) { & $add 'monitoring' "PrometheusRules $ns" 'OK' ($rules -join ', ') } else { & $add 'monitoring' "PrometheusRules $ns" 'FAIL' 'none' }
+        }
+        catch { & $add 'monitoring' "PrometheusRules $ns" 'FAIL' (& $short $_.Exception.Message) }
+    }
+    try {
+        $platformJobs = 'traefik|cert-manager|cainjector|webhook|argocd-.*-metrics|kyverno-.*|kube-state-metrics|node-exporter|kubelet|apiserver'
+        $present = @(Invoke-DoksPrometheusQuery -Query "count by (job) (up{job=~`"$platformJobs`"})")
+        $down = @(Invoke-DoksPrometheusQuery -Query "count by (job) (up{job=~`"$platformJobs`"} == 0)")
+        $required = @('traefik', 'cert-manager', 'argocd-application-controller-metrics', 'kube-state-metrics', 'node-exporter', 'kubelet')
+        $missing = @($required | Where-Object { $name = $_; -not @($present | Where-Object { $_.metric.job -eq $name }).Count })
+        if ($missing.Count -eq 0 -and $down.Count -eq 0) { & $add 'monitoring' 'Prometheus scrapes the platform' 'OK' (@($present | ForEach-Object { $_.metric.job }) -join ', ') }
+        else { & $add 'monitoring' 'Prometheus scrapes the platform' 'FAIL' "missing: $($missing -join ', '); down: $(@($down | ForEach-Object { $_.metric.job }) -join ', ')" }
+    }
+    catch { & $add 'monitoring' 'Prometheus scrapes the platform' 'FAIL' (& $short $_.Exception.Message) }
+
+    $forward = $null
+    try {
+        $user = Get-DoksSecretValue -Namespace monitoring -Name grafana-admin -Key admin-user
+        $password = Get-DoksSecretValue -Namespace monitoring -Name grafana-admin -Key admin-password
+        if (-not $user) { $user = 'admin' }
+        if (-not $password) { throw 'Secret monitoring/grafana-admin not found' }
+        $forward = Start-DoksProbeForward -Namespace monitoring -Target 'svc/monitoring-grafana' -RemotePort 80
+        $auth = "${user}:$password"
+        $health = Invoke-DoksHttp -Url "$($forward.Url)/api/health"
+        $sources = @(ConvertFrom-DoksJsonBody -Text (Invoke-DoksHttp -Url "$($forward.Url)/api/datasources" -BasicAuth $auth).Body)
+        $prometheusSource = @($sources | Where-Object { $_.type -eq 'prometheus' })
+        if ($health.Code -ne 200) { throw "Grafana /api/health answered $($health.Code)" }
+        if ($prometheusSource.Count -eq 0) { throw 'Grafana has no Prometheus datasource' }
+        $queryBody = '{"queries":[{"refId":"A","datasource":{"type":"prometheus","uid":"' + $prometheusSource[0].uid + '"},"expr":"count(up)","instant":true,"intervalMs":30000,"maxDataPoints":100}],"from":"now-5m","to":"now"}'
+        $answer = Invoke-DoksHttp -Url "$($forward.Url)/api/ds/query" -Method POST -Body $queryBody -BasicAuth $auth
+        $result = ConvertFrom-DoksJsonBody -Text $answer.Body
+        $frames = 0; $value = $null
+        if ($result -and $result.results -and $result.results.A) {
+            $frames = @($result.results.A.frames).Count
+            if ($frames -gt 0) { $value = $result.results.A.frames[0].data.values[1][0] }
+        }
+        if ($answer.Code -eq 200 -and $frames -gt 0 -and $value) { & $add 'monitoring' 'Grafana queries Prometheus' 'OK' "datasource $($prometheusSource[0].name) (uid $($prometheusSource[0].uid)): count(up) = $value" }
+        else { & $add 'monitoring' 'Grafana queries Prometheus' 'FAIL' "HTTP $($answer.Code), $frames frame(s): $(& $short $answer.Body)" }
+
+        $dashboardDir = Join-Path -Path $RepoRoot -ChildPath 'charts/monitoring/files/dashboards'
+        $expectedUids = @()
+        if (Test-Path -LiteralPath $dashboardDir -PathType Container) {
+            foreach ($file in Get-ChildItem -Path $dashboardDir -Filter '*.json' -Recurse) {
+                try { $uid = (ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($file.FullName))).uid; if ($uid) { $expectedUids += $uid } } catch { }
+            }
+        }
+        $found = @(ConvertFrom-DoksJsonBody -Text (Invoke-DoksHttp -Url "$($forward.Url)/api/search?type=dash-db&limit=500" -BasicAuth $auth).Body)
+        $foundUids = @($found | ForEach-Object { $_.uid })
+        $missing = @($expectedUids | Where-Object { $foundUids -notcontains $_ })
+        if ($expectedUids.Count -eq 0) { & $add 'monitoring' 'Grafana dashboards provisioned' 'SKIP' "$dashboardDir not found - pass -RepoRoot; Grafana lists $($found.Count) dashboards" }
+        elseif ($missing.Count -eq 0) { & $add 'monitoring' 'Grafana dashboards provisioned' 'OK' "all $($expectedUids.Count) dashboards of the repository among $($found.Count) in Grafana" }
+        else { & $add 'monitoring' 'Grafana dashboards provisioned' 'FAIL' "missing uid(s): $($missing -join ', ')" }
+    }
+    catch { & $add 'monitoring' 'Grafana queries Prometheus' 'FAIL' (& $short $_.Exception.Message) }
+    finally { Stop-DoksProbeForward -Forward $forward; $forward = $null }
+
+    try {
+        $forward = Start-DoksProbeForward -Namespace monitoring -Target 'svc/monitoring-kube-prometheus-alertmanager' -RemotePort 9093
+        $status = Invoke-DoksHttp -Url "$($forward.Url)/api/v2/status"
+        if ($status.Code -ne 200) { throw "Alertmanager /api/v2/status answered $($status.Code)" }
+        if ($SkipAlertTest) { & $add 'monitoring' 'Alertmanager alert path' 'SKIP' 'reachable; synthetic alert not sent (-SkipAlertTest)' }
+        else {
+            $probe = "Test-DoksStack-$([DateTime]::UtcNow.ToString('yyyyMMddHHmmss'))"
+            $alert = '[{"labels":{"alertname":"UserMgmtServiceHighErrorRate","service":"user-mgmt-service","severity":"critical","namespace":"auth-staging","probe":"' + $probe + '"},"annotations":{"summary":"notification channel test (Test-DoksStack)"}}]'
+            $posted = Invoke-DoksHttp -Url "$($forward.Url)/api/v2/alerts" -Method POST -Body $alert
+            if ($posted.Code -ne 200) { throw "POST /api/v2/alerts answered $($posted.Code): $(& $short $posted.Body)" }
+            Start-Sleep -Seconds 2
+            $listed = @(ConvertFrom-DoksJsonBody -Text (Invoke-DoksHttp -Url ("$($forward.Url)/api/v2/alerts?filter=" + [Uri]::EscapeDataString("probe=`"$probe`""))).Body)
+            $receivers = @($listed | ForEach-Object { $_.receivers } | ForEach-Object { $_.name } | Sort-Object -Unique)
+            if ($listed.Count -gt 0 -and $receivers -contains 'webhook') { & $add 'monitoring' 'Alertmanager alert path' 'OK' 'synthetic UserMgmtServiceHighErrorRate accepted and routed to receiver webhook; the delivery is in the channel inbox (Bootstrap-DoksCluster printed its URL), it resolves itself after 5 minutes' }
+            else { & $add 'monitoring' 'Alertmanager alert path' 'FAIL' "alert accepted but listed with receivers: $($receivers -join ', ')" }
+        }
+    }
+    catch { & $add 'monitoring' 'Alertmanager alert path' 'FAIL' (& $short $_.Exception.Message) }
+    finally { Stop-DoksProbeForward -Forward $forward; $forward = $null }
+
+    # ---- 8. end to end (module assignment) ----------------------------------
+    & $header 'End to end (module assignment through the module service)'
+    $accountReady = @{}
+    $email = $null; $testPassword = $null
+    $hint = "no test account (Secret $TestUserNamespace/$TestUserSecret): Start-DoksLoadTest creates and registers it, or run with -CreateTestUser - after registering your own admin (the first user becomes ADMIN)"
+    try {
+        if (Test-DoksKubectlResource -Kind secret -Name $TestUserSecret -Namespace $TestUserNamespace) {
+            $email = Get-DoksSecretValue -Namespace $TestUserNamespace -Name $TestUserSecret -Key email
+            $testPassword = Get-DoksSecretValue -Namespace $TestUserNamespace -Name $TestUserSecret -Key password
+        }
+        elseif ($CreateTestUser) {
+            $email = Initialize-DoksTestUserSecret -Namespace $TestUserNamespace -SecretName $TestUserSecret
+            $testPassword = Get-DoksSecretValue -Namespace $TestUserNamespace -Name $TestUserSecret -Key password
+        }
+    }
+    catch { & $add 'end-to-end' 'test account Secret' 'FAIL' (& $short $_.Exception.Message) }
+    foreach ($envName in $Environment) {
+        $hostName = $hosts[$envName]
+        $accountReady[$envName] = $false
+        if (-not $hostName) { & $add $envName 'module assignment end to end' 'SKIP' 'no host (front door check failed)'; continue }
+        if (-not $email -or -not $testPassword) { & $add $envName 'module assignment end to end' 'SKIP' $hint; continue }
+        try {
+            $sequence = [System.Diagnostics.Stopwatch]::StartNew()
+            $credentials = '{"email":"' + $email + '","password":"' + ($testPassword -replace '"', '\"') + '"}'
+            $login = Invoke-DoksHttp -Url "https://$hostName/users/login" -Method POST -Body $credentials
+            if ($login.Code -ne 200) {
+                if (-not $CreateTestUser) {
+                    & $add $envName 'module assignment end to end' 'SKIP' "login as $email answers $($login.Code): not registered in $envName yet - Start-DoksLoadTest registers it, or -CreateTestUser (the first user registered becomes ADMIN)"
+                    continue
+                }
+                $signup = Invoke-DoksHttp -Url "https://$hostName/api/signup" -Method POST -Body ('{"firstName":"doks","lastName":"test","email":"' + $email + '","password":"' + ($testPassword -replace '"', '\"') + '"}')
+                $login = Invoke-DoksHttp -Url "https://$hostName/users/login" -Method POST -Body $credentials
+                if ($login.Code -ne 200) { throw "signup answered $($signup.Code), login still answers $($login.Code)" }
+                Write-Host "  registered $email in $envName (signup HTTP $($signup.Code))" -ForegroundColor DarkGray
+            }
+            $token = $login.Headers['authorization']
+            if ($token -match '^Bearer\s+(\S+)') { $token = $Matches[1] } else { throw 'login answered 200 without an Authorization: Bearer header' }
+            $bearer = @{ Authorization = "Bearer $token" }
+            $modules = Invoke-DoksHttp -Url "https://$hostName/modules" -Headers $bearer
+            $moduleList = @(ConvertFrom-DoksJsonBody -Text $modules.Body)
+            if ($modules.Code -ne 200 -or $moduleList.Count -eq 0) { throw "GET /modules answered $(if ($modules.Code) { "HTTP $($modules.Code)" } else { 'nothing within 30 s' }) with $($moduleList.Count) module(s) after $([int]$sequence.Elapsed.TotalSeconds) s (module service, MySQL)" }
+            $meResponse = Invoke-DoksHttp -Url "https://$hostName/users/me" -Headers $bearer
+            $me = ConvertFrom-DoksJsonBody -Text $meResponse.Body
+            if (-not $me.id) { throw "GET /users/me answered $(if ($meResponse.Code) { "HTTP $($meResponse.Code)" } else { 'nothing within 30 s' }) without an id after $([int]$sequence.Elapsed.TotalSeconds) s: $(& $short $meResponse.Body)" }
+            $roles = @(@($me.roles) + @($me.role) | Where-Object { $_ } | ForEach-Object { "$_" })
+            $moduleId = $moduleList[0].id
+            $assigned = Invoke-DoksHttp -Url "https://$hostName/users/$($me.id)/modules/$moduleId" -Method POST -Headers $bearer
+            $unknown = Invoke-DoksHttp -Url "https://$hostName/users/$($me.id)/modules/00000000-0000-0000-0000-000000000000" -Method POST -Headers $bearer
+            $after = ConvertFrom-DoksJsonBody -Text (Invoke-DoksHttp -Url "https://$hostName/users/me" -Headers $bearer).Body
+            $listed = @($after.moduleIds) -contains $moduleId
+            $removed = Invoke-DoksHttp -Url "https://$hostName/users/$($me.id)/modules/$moduleId" -Method DELETE -Headers $bearer
+            $detail = "$($moduleList.Count) modules via the module service; assign $($moduleList[0].code): $($assigned.Code), unknown module: $($unknown.Code), read back: $(if ($listed) { 'listed' } else { 'missing' }), unassign: $($removed.Code); account roles: $(if ($roles.Count) { $roles -join '/' } else { '-' }); $([int]$sequence.Elapsed.TotalSeconds) s for the sequence"
+            if ($assigned.Code -eq 200 -and $unknown.Code -eq 404 -and $listed -and $removed.Code -eq 200) { & $add $envName 'module assignment end to end' 'OK' $detail; $accountReady[$envName] = $true }
+            else { & $add $envName 'module assignment end to end' 'FAIL' "$detail (expected 200, 404, listed, 200)" }
+        }
+        catch { & $add $envName 'module assignment end to end' 'FAIL' (& $short $_.Exception.Message) }
+    }
+
+    # ---- 9. parallel users ----------------------------------------------------
+    if ($ParallelSessions -gt 0) {
+        & $header "Parallel users ($ParallelSessions sessions, $ParallelSeconds s per phase)"
+        $limits = @{ 'login' = 2.0; 'login (frontend)' = 2.0; 'profile' = 1.0; 'profile (frontend)' = 1.0; 'modules' = 2.0; 'assign' = 2.0; 'unassign' = 2.0; 'logout (frontend)' = 1.0; 'wrong password' = 2.0; 'signup' = 5.0 }
+        foreach ($envName in $Environment) {
+            $hostName = $hosts[$envName]
+            if (-not $hostName -or -not $email -or -not $testPassword -or -not ($accountReady[$envName] -or $CreateTestUser)) { & $add $envName 'parallel users' 'SKIP' 'needs a working test account (see the end-to-end row)'; continue }
+            foreach ($mode in 'distinct', 'shared') {
+                try {
+                    Write-Host "  $mode accounts ..." -ForegroundColor DarkGray
+                    $stats = @(Invoke-DoksUserStorm -HostName $hostName -Email $email -Password $testPassword -Mode $mode -Sessions $ParallelSessions -Seconds $ParallelSeconds)
+                    if ($stats.Count -eq 0) { throw 'no sample collected (the sessions produced no result)' }
+                    foreach ($row in $stats) { Write-Host ("    {0,-20} {1,5} calls {2,4} errors  avg {3,6:N2}s  p95 {4,6:N2}s  max {5,6:N2}s  {6}" -f $row.Type, $row.Calls, $row.Errors, $row.Avg, $row.P95, $row.Max, $row.Codes) -ForegroundColor DarkGray }
+                    $slow = @($stats | Where-Object { $limits.ContainsKey($_.Type) -and $_.P95 -gt $limits[$_.Type] } | ForEach-Object { "$($_.Type) p95 $($_.P95) s" })
+                    $calls = 0; $errors = 0; foreach ($row in $stats) { $calls += $row.Calls; $errors += $row.Errors }
+                    $rate = if ($calls) { 100.0 * $errors / $calls } else { 100.0 }
+                    $detail = "$mode accounts: $calls calls, $errors errors ($([Math]::Round($rate, 1)) %)" + $(if ($slow.Count) { "; over the threshold: $($slow -join ', ')" } else { '; every p95 within the thresholds' })
+                    if ($slow.Count -eq 0 -and $rate -le 5) { & $add $envName "parallel users ($mode accounts)" 'OK' $detail } else { & $add $envName "parallel users ($mode accounts)" 'FAIL' $detail }
+                }
+                catch { & $add $envName "parallel users ($mode accounts)" 'FAIL' (& $short $_.Exception.Message) }
+            }
+        }
+    }
+
+    # ---- 10. load test --------------------------------------------------------
+    if ($LoadTest) {
+        & $header 'Load test (k6, loadtest/)'
+        foreach ($envName in $Environment) {
+            if (-not $accountReady[$envName] -and -not $CreateTestUser) { & $add $envName 'k6 load test' 'SKIP' "no registered test account in $envName (see the end-to-end row); Start-DoksLoadTest -Environment $envName registers it (the first user becomes ADMIN)"; continue }
+            try {
+                $loadParameters = @{ Environment = $envName; RepoRoot = $RepoRoot; Confirm = $false }
+                if ($PeakVus -gt 0) { $loadParameters.PeakVus = $PeakVus }
+                $run = Start-DoksLoadTest @loadParameters
+                $replicas = if ($null -ne $run.MaxReplicas) { "backend replicas $($run.MinReplicas) to $($run.MaxReplicas)" } else { 'HPA not read' }
+                switch ($run.Result) {
+                    'Complete' { & $add $envName 'k6 load test' 'OK' "thresholds held after $($run.Minutes) min at $($run.PeakVus) VUs; $replicas; testid=$($run.TestId)" }
+                    'Failed' { & $add $envName 'k6 load test' 'FAIL' "a threshold was breached at $($run.PeakVus) VUs - that is the result (k6 load test dashboard, testid=$($run.TestId)); $replicas" }
+                    default { & $add $envName 'k6 load test' 'FAIL' "the Job did not finish: kubectl -n $TestUserNamespace describe job k6-user-mgmt-service" }
+                }
+            }
+            catch { & $add $envName 'k6 load test' 'FAIL' (& $short $_.Exception.Message) }
+        }
+    }
+
+    $ok = @($rows | Where-Object { $_.Status -eq 'OK' }).Count
+    $fail = @($rows | Where-Object { $_.Status -eq 'FAIL' }).Count
+    $skip = @($rows | Where-Object { $_.Status -eq 'SKIP' }).Count
+    Write-Host ("{0} checks: {1} OK, {2} FAIL, {3} SKIP" -f $rows.Count, $ok, $fail, $skip) -ForegroundColor $(if ($fail) { 'Red' } else { 'Green' })
+    $rows
+}
+
+# ---------------------------------------------------------------------------
 # Load configuration layers 2-4 (project file, user file, environment)
 # ---------------------------------------------------------------------------
 
@@ -1916,6 +2759,6 @@ Export-ModuleMember -Function @(
     'New-DoksCluster', 'Remove-DoksCluster', 'Get-DoksCluster', 'Use-DoksCluster', 'Disconnect-DoksCluster',
     'Wait-DoksNodeReady', 'Get-DoksOption', 'Initialize-DoksCluster',
     'Set-DoksToken', 'Remove-DoksToken', 'Connect-DoksAccount', 'Disconnect-DoksAccount', 'Get-DoksAccount',
-    'Get-DoksDefault', 'Set-DoksDefault', 'Test-DoksSetup',
+    'Get-DoksDefault', 'Set-DoksDefault', 'Test-DoksSetup', 'Test-DoksStack', 'Start-DoksLoadTest',
     'Sync-DoksTerraform', 'Sync-DoksHostname', 'Connect-DoksPortForward', 'Disconnect-DoksPortForward'
 ) -Alias @('Bootstrap-DoksCluster')

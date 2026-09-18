@@ -3,7 +3,7 @@
     ModuleVersion        = '0.0.1'
     GUID                 = '7f3d9b2e-6a1c-4c58-9e2b-0d3f5a8c1e47'
     Author               = 'Beatos Learns'
-    Description          = 'Throwaway DigitalOcean Kubernetes (DOKS) clusters from PowerShell: create, connect this window only (KUBECONFIG), list, delete, and bootstrap the GitOps stack (namespaces+secrets, ArgoCD, root application). API token stored per user (Windows Credential Manager / ~/.doks/token). Requires doctl and kubectl on PATH; helm for Bootstrap-DoksCluster.'
+    Description          = 'Throwaway DigitalOcean Kubernetes (DOKS) clusters from PowerShell: create, connect this window only (KUBECONFIG), list, delete, and bootstrap the GitOps stack (namespaces+secrets, ArgoCD, root application). API token stored per user (Windows Credential Manager / ~/.doks/token). Requires doctl and kubectl on PATH; helm for Bootstrap-DoksCluster. Test-DoksStack verifies the running stack in order, Start-DoksLoadTest runs the k6 load test.'
     PowerShellVersion    = '5.1'
     CompatiblePSEditions = @('Desktop', 'Core')
 
@@ -24,6 +24,8 @@
         'Get-DoksDefault',
         'Set-DoksDefault',
         'Test-DoksSetup',
+        'Test-DoksStack',
+        'Start-DoksLoadTest',
         'Sync-DoksTerraform',
         'Sync-DoksHostname',
         'Connect-DoksPortForward',

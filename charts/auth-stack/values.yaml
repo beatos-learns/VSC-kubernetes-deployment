@@ -38,6 +38,12 @@ generic-stack:
         # The seed SQL owns the schema: the backend only validates it, never
         # alters it implicitly (same in staging, so drift fails there first).
         SPRING_JPA_HIBERNATE_DDL_AUTO: validate
+        # One managed PostgreSQL (db-s-1vcpu-1gb, 22 client connections) serves
+        # both environments: 3 per pod x (5 prod + 2 staging) = 21 leaves one
+        # for a seed Job. A request holds a connection for milliseconds; the
+        # default pool of 10 per pod starves the other pods and stalls requests.
+        SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "3"
+        SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "1"
       secretEnv:
         SPRING_DATASOURCE_URL: db-url
         SPRING_DATASOURCE_USERNAME: db-user
