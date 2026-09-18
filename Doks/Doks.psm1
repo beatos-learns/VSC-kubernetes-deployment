@@ -2246,8 +2246,8 @@ function Invoke-DoksUserStorm {
         while ($watch.Elapsed.TotalSeconds -lt $Seconds) {
             Remove-Item -LiteralPath $jar -Force -ErrorAction SilentlyContinue
             if ($first -and $Mode -eq 'distinct') {
-                # 201 new, 409 exists; the backend answers a duplicate with 500 today
-                Invoke-Call -Type 'signup' -Method POST -Url "https://$HostName/api/signup" -Body ('{"firstName":"storm","lastName":"session' + $Session + '","email":"' + $account + '","password":"' + ($Password -replace '"', '\"') + '"}') -Expect @(201, 409, 500) | Out-Null
+                # 201 new, 409 already registered
+                Invoke-Call -Type 'signup' -Method POST -Url "https://$HostName/api/signup" -Body ('{"firstName":"storm","lastName":"session' + $Session + '","email":"' + $account + '","password":"' + ($Password -replace '"', '\"') + '"}') -Expect @(201, 409) | Out-Null
             }
             $first = $false
             $login = Invoke-Call -Type 'login' -Method POST -Url "https://$HostName/users/login" -Body $credentials -Expect @(200)
@@ -2260,7 +2260,8 @@ function Invoke-DoksUserStorm {
             $moduleId = ''
             try { $list = @(ConvertFrom-Json -InputObject $modules.Body); if ($list.Count -gt 0) { $moduleId = $list[0].id } } catch { }
             if ($userId -and $moduleId) {
-                Invoke-Call -Type 'assign' -Method POST -Url "https://$HostName/users/$userId/modules/$moduleId" -Token $token -Expect @(200) | Out-Null
+                # 409 when a parallel session assigned the same module to the shared account first
+                Invoke-Call -Type 'assign' -Method POST -Url "https://$HostName/users/$userId/modules/$moduleId" -Token $token -Expect @(200, 409) | Out-Null
                 Invoke-Call -Type 'unassign' -Method DELETE -Url "https://$HostName/users/$userId/modules/$moduleId" -Token $token -Expect @(200) | Out-Null
             }
             Invoke-Call -Type 'login (frontend)' -Method POST -Url "https://$HostName/api/login" -Body $credentials -Cookies -Expect @(200) | Out-Null
